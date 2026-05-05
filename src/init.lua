@@ -153,7 +153,7 @@ local function scan_eisy(driver, controller)
     end
 
     local child = find_child_by_key(driver, key)
-    if not child then
+    if not child or eisy_device.kind == "keypad" then
       log.info("Creating eISY child device " .. eisy_device.label .. " as " .. eisy_device.profile)
       driver:try_create_device({
         type = "EDGE_CHILD",

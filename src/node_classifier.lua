@@ -69,6 +69,11 @@ local function node_text(node)
   }, " "))
 end
 
+local function component_id(index)
+  if index == 1 then return "main" end
+  return "button" .. tostring(index)
+end
+
 local function keypad_letter(index)
   return string.char(string.byte("A") + index - 1)
 end
@@ -173,31 +178,25 @@ function classifier.classify_all(nodes, ignored_patterns)
         }
       end
     elseif #group > 1 and contains_any(combined_text, { "keypad", "keypadlinc", "kpl" }) then
+      local components = {}
+      local component_names = {}
+      for index, node in ipairs(group) do
+        if index <= 8 then
+          local id = component_id(index)
+          components[id] = node.address
+          component_names[id] = keypad_component_name(index, node)
+        end
+      end
       devices[#devices + 1] = {
         key = key,
         kind = "keypad",
-        profile = "eisy-keypad-main",
+        profile = "eisy-keypad-8",
         label = group[1].name or key,
         primary = group[1].address,
-        components = { main = group[1].address },
-        nodes = { group[1] }
+        components = components,
+        component_names = component_names,
+        nodes = group
       }
-
-      for index, node in ipairs(group) do
-        if index > 1 and index <= 8 then
-          local label = keypad_component_name(index, node)
-          devices[#devices + 1] = {
-            key = node.address,
-            kind = "keypad_button",
-            profile = "eisy-keypad-button",
-            label = label,
-            primary = node.address,
-            components = { main = node.address },
-            component_names = { main = label },
-            nodes = { node }
-          }
-        end
-      end
     elseif #group > 1 and contains_any(combined_text, { "iolinc", "i/o linc", "io linc", "2450" }) then
       local components = { main = group[1].address, sensor = (group[2] or group[1]).address }
       devices[#devices + 1] = {
