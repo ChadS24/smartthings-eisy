@@ -92,6 +92,10 @@ local function is_water_leak_text(text)
   return contains_any(text, { "leak", "water leak", "flood", "moisture" })
 end
 
+local function is_motion_text(text)
+  return contains_any(text, { "motion", "occupancy", "2420m", "2842", "2844", "pir" })
+end
+
 local function is_thermostat_node(node)
   local text = node_text(node)
   local node_def = lower(node.nodeDefId)
@@ -133,7 +137,7 @@ local function classify_single(node)
   if is_thermostat_node(node) then
     return "thermostat", "eisy-thermostat"
   end
-  if starts_with_any(node_def, { "pir" }) or contains_any(text, { "motion", "occupancy", "2420m", "2842", "2844", "pir" }) then
+  if starts_with_any(node_def, { "pir" }) or is_motion_text(text) then
     return "motion", "eisy-motion"
   end
   if node_def == "binaryalarm_adv" or contains_any(text, { "binaryalarm", "binary alarm" }) then
@@ -173,14 +177,20 @@ local function group_key(node)
   return node.address
 end
 
+local function should_include_node(node, patterns)
+  local enabled = lower(node.enabled)
+  if not is_native_insteon_node(node) or ignored(node, patterns) then return false end
+  if enabled ~= "false" then return true end
+  return is_motion_text(node_text(node))
+end
+
 function classifier.classify_all(nodes, ignored_patterns)
   local patterns = type(ignored_patterns) == "table" and ignored_patterns or split_patterns(ignored_patterns)
   local grouped = {}
   local ordered_keys = {}
 
   for _, node in ipairs(nodes or {}) do
-    local enabled = lower(node.enabled)
-    if enabled ~= "false" and is_native_insteon_node(node) and not ignored(node, patterns) then
+    if should_include_node(node, patterns) then
       local key = group_key(node)
       if not grouped[key] then
         grouped[key] = {}
