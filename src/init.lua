@@ -9,6 +9,7 @@ local ws_subscription = require "ws_subscription"
 
 local CONTROLLER_DNI = "eisy-controller"
 local scan_capability = capabilities["oftentrust07380.scanfordevices"]
+local handle_child_info_changed
 
 local function controller_opts(device)
   local normalized = EisyClient.normalize_config({
@@ -269,7 +270,10 @@ local function removed_handler(_, device)
 end
 
 local function info_changed_handler(driver, device, _, args)
-  if device.device_network_id ~= CONTROLLER_DNI then return end
+  if device.device_network_id ~= CONTROLLER_DNI then
+    if handle_child_info_changed then handle_child_info_changed(driver, device, args) end
+    return
+  end
   local old = args and args.old_st_store and args.old_st_store.preferences or {}
   local prefs = device.preferences
   if old.eisyHost ~= prefs.eisyHost
@@ -288,6 +292,63 @@ local function command_address(controller, device, component)
   local eisy_device = by_key[device_child_key(device)]
   if not eisy_device then return nil, nil end
   return (eisy_device.components or {})[component or "main"], eisy_device
+end
+
+local function preference_changed(old, prefs, name)
+  if not old or old[name] == nil then return false end
+  return tostring(old[name]) ~= tostring(prefs[name])
+end
+
+local function bounded_integer(value, minimum, maximum)
+  local number = tonumber(value)
+  if not number then return nil end
+  number = math.floor(number)
+  if number < minimum or number > maximum then return nil end
+  return number
+end
+
+local function send_device_command(driver, device, eisy_command, params)
+  local controller = get_controller(driver, device)
+  if not controller then return false end
+  local address = command_address(controller, device, "main")
+  if not address then
+    log.warn("No eISY node address for preference command on " .. tostring(device.device_network_id))
+    return false
+  end
+  local client = client_for(controller)
+  local _, err = client:command(address, eisy_command, params)
+  if err then
+    log.warn("eISY preference command failed: " .. tostring(err))
+    return false
+  end
+  refresh_child(driver, controller, device)
+  return true
+end
+
+handle_child_info_changed = function(driver, device, args)
+  local old = args and args.old_st_store and args.old_st_store.preferences or {}
+  local prefs = device.preferences or {}
+  if prefs.dimmerOnLevel == nil and prefs.dimmerRampRate == nil then return end
+
+  if preference_changed(old, prefs, "dimmerOnLevel") then
+    local on_level = bounded_integer(prefs.dimmerOnLevel, 0, 255)
+    if on_level then
+      log.info("Setting Insteon dimmer on level to " .. tostring(on_level))
+      send_device_command(driver, device, "OL", { on_level })
+    else
+      log.warn("Invalid Insteon dimmer on level: " .. tostring(prefs.dimmerOnLevel))
+    end
+  end
+
+  if preference_changed(old, prefs, "dimmerRampRate") then
+    local ramp_rate = bounded_integer(prefs.dimmerRampRate, 0, 31)
+    if ramp_rate then
+      log.info("Setting Insteon dimmer ramp rate to " .. tostring(ramp_rate))
+      send_device_command(driver, device, "RR", { ramp_rate })
+    else
+      log.warn("Invalid Insteon dimmer ramp rate: " .. tostring(prefs.dimmerRampRate))
+    end
+  end
 end
 
 local function send_command_and_refresh(driver, device, command, params)
