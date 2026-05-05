@@ -1,0 +1,10 @@
+name: eisy-water
+components:
+  - id: main
+    capabilities:
+      - id: waterSensor
+        version: 1
+      - id: refresh
+        version: 1
+    categories:
+      - name: LeakSensor

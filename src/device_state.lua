@@ -59,6 +59,8 @@ function state.emit_component(device, component, kind, properties, component_nam
     device:emit_component_event(component_ref(device, component), value > 0 and capabilities.motionSensor.motion.active() or capabilities.motionSensor.motion.inactive())
   elseif kind == "contact" then
     device:emit_component_event(component_ref(device, component), value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
+  elseif kind == "water" then
+    device:emit_component_event(component_ref(device, component), value > 0 and capabilities.waterSensor.water.wet() or capabilities.waterSensor.water.dry())
   elseif kind == "fan" then
     device:emit_component_event(component_ref(device, component), switch_event(value))
     device:emit_component_event(component_ref(device, component), capabilities.fanSpeed.fanSpeed(fan_speed_from_property(st)))

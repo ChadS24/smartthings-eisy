@@ -88,12 +88,26 @@ local function keypad_component_name(index, node)
   return letter .. " - " .. name
 end
 
+local function is_water_leak_text(text)
+  return contains_any(text, { "leak", "water leak", "flood", "moisture" })
+end
+
+local function wet_node(group)
+  for _, node in ipairs(group) do
+    if contains_any(node_text(node), { "wet", "water leak" }) then return node end
+  end
+  return group[1]
+end
+
 local function classify_single(node)
   local text = node_text(node)
   local node_def = lower(node.nodeDefId)
   local type_prefix = node_type_prefix(node)
   local address = lower(node.address)
 
+  if is_water_leak_text(text) then
+    return "water", "eisy-water"
+  end
   if starts_with_any(node_def, { "pir" }) or contains_any(text, { "motion", "occupancy", "2420m", "2842", "2844", "pir" }) then
     return "motion", "eisy-motion"
   end
@@ -161,7 +175,18 @@ function classifier.classify_all(nodes, ignored_patterns)
     local combined_text = ""
     for _, node in ipairs(group) do combined_text = combined_text .. " " .. node_text(node) end
 
-    if #group == 2
+    if is_water_leak_text(combined_text) then
+      local wet = wet_node(group)
+      devices[#devices + 1] = {
+        key = key,
+        kind = "water",
+        profile = "eisy-water",
+        label = group[1].name or wet.name or key,
+        primary = wet.address,
+        components = { main = wet.address },
+        nodes = group
+      }
+    elseif #group == 2
         and (lower(group[1].nodeDefId) == "dimmerlamponly" or lower(group[2].nodeDefId) == "dimmerlamponly")
         and (lower(group[1].nodeDefId) == "fanlincmotor" or lower(group[2].nodeDefId) == "fanlincmotor") then
       for _, node in ipairs(group) do
