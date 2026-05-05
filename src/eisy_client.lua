@@ -64,7 +64,7 @@ end
 
 function client.parse_nodes(xml)
   local nodes = {}
-  for attrs, block in tostring(xml):gmatch("<node%s*([^>]*)>(.-)</node>") do
+  for attrs, block in tostring(xml):gmatch("<node%s+([^>]*)>(.-)</node>") do
     local address = tag_text(block, "address")
     if address then
       local node_attrs = parse_attrs(attrs)
