@@ -69,11 +69,6 @@ function state.emit_component(device, component, kind, properties, component_nam
     local status = value > 0 and "on" or "off"
     device:emit_component_event(component_ref(device, component), keypad_button_status.buttonName(component_name or component))
     device:emit_component_event(component_ref(device, component), keypad_button_status.buttonStatus(status))
-    device:emit_component_event(component_ref(device, component), capabilities.button.supportedButtonValues({ "pushed" }))
-    device:emit_component_event(component_ref(device, component), capabilities.button.numberOfButtons({ value = 1 }))
-    if value > 0 then
-      device:emit_component_event(component_ref(device, component), capabilities.button.button.pushed({ state_change = true }))
-    end
   elseif kind == "iolinc_sensor" then
     device:emit_component_event(component_ref(device, component), value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
   else

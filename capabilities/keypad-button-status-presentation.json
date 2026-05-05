@@ -22,19 +22,19 @@
   },
   "detailView": [
     {
-      "label": "{{buttonName.value}}: {{buttonStatus.value}}",
+      "label": "{{buttonName.value}}",
       "displayType": "state",
       "state": {
-        "label": "{{buttonName.value}}: {{buttonStatus.value}}",
+        "label": "{{buttonStatus.value}}",
         "alternatives": [
           {
             "key": "on",
-            "value": "{{buttonName.value}}: on",
+            "value": "On",
             "type": "active"
           },
           {
             "key": "off",
-            "value": "{{buttonName.value}}: off",
+            "value": "Off",
             "type": "inactive"
           }
         ]

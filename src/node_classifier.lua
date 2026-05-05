@@ -69,6 +69,10 @@ local function component_id(index)
   return "button" .. tostring(index)
 end
 
+local function keypad_letter(index)
+  return string.char(string.byte("A") + index - 1)
+end
+
 local function classify_single(node)
   local text = node_text(node)
   local node_def = lower(node.nodeDefId)
@@ -165,7 +169,7 @@ function classifier.classify_all(nodes, ignored_patterns)
         if index <= 8 then
           local id = component_id(index)
           components[id] = node.address
-          component_names[id] = node.name or node.address
+          component_names[id] = keypad_letter(index) .. " - " .. (node.name or node.address)
         end
       end
       devices[#devices + 1] = {
