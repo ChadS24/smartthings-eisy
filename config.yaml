@@ -1,0 +1,7 @@
+name: eisy-insteon
+packageKey: eisy-insteon
+permissions:
+  lan: {}
+  discovery: {}
+description: Universal Devices eISY / IoX Insteon LAN integration
+vendorSupportInformation: "Local SmartThings Edge driver for Universal Devices eISY/IoX Insteon nodes."

@@ -1,0 +1,16 @@
+name: eisy-iolinc
+components:
+  - id: main
+    capabilities:
+      - id: switch
+        version: 1
+      - id: refresh
+        version: 1
+    categories:
+      - name: Switch
+  - id: sensor
+    capabilities:
+      - id: contactSensor
+        version: 1
+    categories:
+      - name: ContactSensor

@@ -1,0 +1,10 @@
+{
+  "name": "scanForDevices",
+  "attributes": {},
+  "commands": {
+    "scan": {
+      "name": "scan",
+      "arguments": []
+    }
+  }
+}

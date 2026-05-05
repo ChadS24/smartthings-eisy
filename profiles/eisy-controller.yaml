@@ -1,0 +1,71 @@
+name: eisy-controller
+components:
+  - id: main
+    capabilities:
+      - id: oftentrust07380.scanfordevices
+        version: 1
+      - id: refresh
+        version: 1
+    categories:
+      - name: Bridges
+preferences:
+  - name: eisyHost
+    title: eISY host or IP
+    description: Hostname or IP address of the local eISY/IoX controller.
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      default: ""
+  - name: eisyProtocol
+    title: eISY protocol
+    description: Protocol for REST calls.
+    required: true
+    preferenceType: enumeration
+    definition:
+      options:
+        http: HTTP
+        https: HTTPS
+      default: http
+  - name: eisyPort
+    title: eISY port
+    description: HTTP or HTTPS port.
+    required: true
+    preferenceType: integer
+    definition:
+      minimum: 1
+      maximum: 65535
+      default: 80
+  - name: eisyUsername
+    title: eISY username
+    description: Local eISY username.
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      default: ""
+  - name: eisyPassword
+    title: eISY password
+    description: Local eISY password.
+    required: false
+    preferenceType: string
+    definition:
+      stringType: password
+      default: ""
+  - name: pollingInterval
+    title: Fallback polling interval
+    description: Fallback status polling interval in seconds. Use 0 to rely on WebSocket events only.
+    required: true
+    preferenceType: integer
+    definition:
+      minimum: 0
+      maximum: 3600
+      default: 0
+  - name: ignoredNodes
+    title: Ignored node patterns
+    description: Comma-separated node address or name fragments to skip during discovery.
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      default: ""

@@ -1,0 +1,70 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{buttonStatus.value}}",
+        "alternatives": [
+          {
+            "key": "on",
+            "value": "on",
+            "type": "active"
+          },
+          {
+            "key": "off",
+            "value": "off",
+            "type": "inactive"
+          }
+        ]
+      }
+    ],
+    "actions": [],
+    "basicPlus": []
+  },
+  "detailView": [
+    {
+      "label": "{{buttonName.value}}: {{buttonStatus.value}}",
+      "displayType": "state",
+      "state": {
+        "label": "{{buttonName.value}}: {{buttonStatus.value}}",
+        "alternatives": [
+          {
+            "key": "on",
+            "value": "{{buttonName.value}}: on",
+            "type": "active"
+          },
+          {
+            "key": "off",
+            "value": "{{buttonName.value}}: off",
+            "type": "inactive"
+          }
+        ]
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "Keypad button status",
+        "displayType": "list",
+        "list": {
+          "alternatives": [
+            {
+              "key": "on",
+              "value": "on",
+              "type": "active"
+            },
+            {
+              "key": "off",
+              "value": "off",
+              "type": "inactive"
+            }
+          ],
+          "value": "buttonStatus.value"
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "oftentrust07380.keypadbuttonstatus",
+  "version": 1
+}

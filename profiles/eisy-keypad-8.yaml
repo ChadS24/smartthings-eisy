@@ -1,0 +1,66 @@
+name: eisy-keypad-8
+components:
+  - id: main
+    capabilities:
+      - id: switch
+        version: 1
+      - id: refresh
+        version: 1
+    categories:
+      - name: Switch
+  - id: button2
+    capabilities:
+      - id: oftentrust07380.keypadbuttonstatus
+        version: 1
+      - id: button
+        version: 1
+    categories:
+      - name: Switch
+  - id: button3
+    capabilities:
+      - id: oftentrust07380.keypadbuttonstatus
+        version: 1
+      - id: button
+        version: 1
+    categories:
+      - name: Switch
+  - id: button4
+    capabilities:
+      - id: oftentrust07380.keypadbuttonstatus
+        version: 1
+      - id: button
+        version: 1
+    categories:
+      - name: Switch
+  - id: button5
+    capabilities:
+      - id: oftentrust07380.keypadbuttonstatus
+        version: 1
+      - id: button
+        version: 1
+    categories:
+      - name: Switch
+  - id: button6
+    capabilities:
+      - id: oftentrust07380.keypadbuttonstatus
+        version: 1
+      - id: button
+        version: 1
+    categories:
+      - name: Switch
+  - id: button7
+    capabilities:
+      - id: oftentrust07380.keypadbuttonstatus
+        version: 1
+      - id: button
+        version: 1
+    categories:
+      - name: Switch
+  - id: button8
+    capabilities:
+      - id: oftentrust07380.keypadbuttonstatus
+        version: 1
+      - id: button
+        version: 1
+    categories:
+      - name: Switch

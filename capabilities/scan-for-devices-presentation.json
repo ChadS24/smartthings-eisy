@@ -1,0 +1,29 @@
+{
+  "dashboard": {
+    "states": [],
+    "actions": [
+      {
+        "displayType": "pushButton",
+        "pushButton": {
+          "command": "scan"
+        }
+      }
+    ],
+    "basicPlus": []
+  },
+  "detailView": [
+    {
+      "label": "Scan for devices",
+      "displayType": "pushButton",
+      "pushButton": {
+        "command": "scan"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [],
+    "actions": []
+  },
+  "id": "oftentrust07380.scanfordevices",
+  "version": 1
+}
