@@ -436,9 +436,14 @@ local function thermostat_fan_mode_code(mode)
 end
 
 local function thermostat_temp_param(value)
-  local numeric = tonumber(type(value) == "table" and value.value or value)
-  if not numeric then return nil end
-  return math.floor((numeric * 2) + 0.5)
+  return device_state.thermostat_setpoint_to_insteon(value)
+end
+
+local function thermostat_setpoint_arg(command)
+  if command.args then
+    return command.args.setpoint or command.args.temperature
+  end
+  return command.positional_args and command.positional_args[1]
 end
 
 local function set_thermostat_mode(driver, device, command)
@@ -465,7 +470,7 @@ end
 
 local function set_heating_setpoint(driver, device, command)
   command.eisy_command = "CLISPH"
-  local setpoint = command.args and command.args.temperature or command.positional_args and command.positional_args[1]
+  local setpoint = thermostat_setpoint_arg(command)
   local value = thermostat_temp_param(setpoint)
   if not value then
     log.warn("Invalid thermostat heating setpoint: " .. tostring(setpoint))
@@ -476,7 +481,7 @@ end
 
 local function set_cooling_setpoint(driver, device, command)
   command.eisy_command = "CLISPC"
-  local setpoint = command.args and command.args.temperature or command.positional_args and command.positional_args[1]
+  local setpoint = thermostat_setpoint_arg(command)
   local value = thermostat_temp_param(setpoint)
   if not value then
     log.warn("Invalid thermostat cooling setpoint: " .. tostring(setpoint))

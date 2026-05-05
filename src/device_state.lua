@@ -189,4 +189,13 @@ function state.fan_speed_to_insteon(speed)
   return 255
 end
 
+function state.thermostat_setpoint_to_insteon(value)
+  local numeric = tonumber(type(value) == "table" and value.value or value)
+  if not numeric then return nil end
+  if numeric <= 45 then
+    numeric = (numeric * 9 / 5) + 32
+  end
+  return math.floor((numeric * 2) + 0.5)
+end
+
 return state
