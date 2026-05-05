@@ -10,6 +10,31 @@ local function component_ref(device, component_id)
   return component_id
 end
 
+local function cap_id(capability, fallback)
+  return capability and capability.ID or fallback
+end
+
+local function latest_state(device, component, capability, capability_id, attribute, default)
+  if not device or not device.get_latest_state then return default end
+  local ok, value = pcall(function()
+    return device:get_latest_state(component or "main", cap_id(capability, capability_id), attribute, default)
+  end)
+  if ok and value ~= nil then return value end
+  return default
+end
+
+local function latest_number(device, component, capability, capability_id, attribute)
+  local value = latest_state(device, component, capability, capability_id, attribute)
+  if type(value) == "table" then value = value.value end
+  return tonumber(value)
+end
+
+local function latest_string(device, component, capability, capability_id, attribute)
+  local value = latest_state(device, component, capability, capability_id, attribute)
+  if type(value) == "table" then value = value.value end
+  return value and tostring(value) or nil
+end
+
 local function number_value(prop)
   if not prop then return 0 end
   return tonumber(prop.value) or 0
@@ -90,9 +115,22 @@ local function thermostat_operating_state(prop)
   if formatted:find("idle", 1, true) or formatted:find("off", 1, true) then return "idle" end
 
   local value = tonumber(prop and prop.value)
+  if not value then return nil end
+  if value == 0 then return "idle" end
   if value == 1 then return "heating" end
   if value == 2 then return "cooling" end
   if value == 3 then return "fan only" end
+  return nil
+end
+
+local function inferred_thermostat_operating_state(mode, temp, heat, cool)
+  if mode == "off" then return "idle" end
+  if temp and mode == "cool" and cool and temp > cool then return "cooling" end
+  if temp and mode == "heat" and heat and temp < heat then return "heating" end
+  if temp and mode == "auto" then
+    if cool and temp > cool then return "cooling" end
+    if heat and temp < heat then return "heating" end
+  end
   return "idle"
 end
 
@@ -124,14 +162,20 @@ function state.emit_component(device, component, kind, properties, component_nam
     device:emit_component_event(component_reference, capabilities.thermostatFanMode.supportedThermostatFanModes({ "auto", "on" }))
 
     local temp = thermostat_temperature(st)
+    temp = temp or latest_number(device, component, capabilities.temperatureMeasurement, "temperatureMeasurement", "temperature")
     if temp then device:emit_component_event(component_reference, capabilities.temperatureMeasurement.temperature({ value = temp, unit = "F" })) end
     local heat = thermostat_temperature(properties and properties.CLISPH)
+    heat = heat or latest_number(device, component, capabilities.thermostatHeatingSetpoint, "thermostatHeatingSetpoint", "heatingSetpoint")
     if heat then device:emit_component_event(component_reference, capabilities.thermostatHeatingSetpoint.heatingSetpoint({ value = heat, unit = "F" })) end
     local cool = thermostat_temperature(properties and properties.CLISPC)
+    cool = cool or latest_number(device, component, capabilities.thermostatCoolingSetpoint, "thermostatCoolingSetpoint", "coolingSetpoint")
     if cool then device:emit_component_event(component_reference, capabilities.thermostatCoolingSetpoint.coolingSetpoint({ value = cool, unit = "F" })) end
     local mode = thermostat_mode(properties and properties.CLIMD)
+    mode = mode or latest_string(device, component, capabilities.thermostatMode, "thermostatMode", "thermostatMode")
     if mode then device:emit_component_event(component_reference, capabilities.thermostatMode.thermostatMode(mode)) end
-    device:emit_component_event(component_reference, capabilities.thermostatOperatingState.thermostatOperatingState(thermostat_operating_state(properties and properties.CLIHCS)))
+    local operating_state = thermostat_operating_state(properties and properties.CLIHCS)
+        or inferred_thermostat_operating_state(mode, temp, heat, cool)
+    device:emit_component_event(component_reference, capabilities.thermostatOperatingState.thermostatOperatingState(operating_state))
     local fan_mode = thermostat_fan_mode(properties and properties.CLIFS)
     if fan_mode then device:emit_component_event(component_reference, capabilities.thermostatFanMode.thermostatFanMode(fan_mode)) end
   elseif kind == "fan" then
