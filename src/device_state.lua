@@ -36,17 +36,17 @@ end
 local function fan_speed_number(value)
   value = tonumber(value) or 0
   if value <= 0 then return 0 end
-  if value <= 85 then return 33 end
-  if value <= 170 then return 66 end
-  return 100
+  if value <= 85 then return 1 end
+  if value <= 170 then return 2 end
+  return 3
 end
 
 local function fan_speed_from_property(prop)
   local formatted = tostring(prop and prop.formatted or ""):lower()
   if formatted:find("off", 1, true) then return 0 end
-  if formatted:find("low", 1, true) or formatted:find("slow", 1, true) then return 33 end
-  if formatted:find("medium", 1, true) or formatted:find("med", 1, true) then return 66 end
-  if formatted:find("high", 1, true) or formatted:find("fast", 1, true) then return 100 end
+  if formatted:find("low", 1, true) or formatted:find("slow", 1, true) then return 1 end
+  if formatted:find("medium", 1, true) or formatted:find("med", 1, true) then return 2 end
+  if formatted:find("high", 1, true) or formatted:find("fast", 1, true) then return 3 end
   return fan_speed_number(prop and prop.value)
 end
 
@@ -101,17 +101,22 @@ function state.fan_speed_to_insteon(speed)
   if type(speed) == "table" then speed = speed.value or speed.speed or speed.fanSpeed end
   local normalized = tostring(speed or ""):lower()
   if normalized == "off" then return 0 end
-  if normalized == "low" then return 49 end
-  if normalized == "medium" then return 99 end
-  if normalized == "high" or normalized == "max" then return 100 end
+  if normalized == "low" then return 64 end
+  if normalized == "medium" then return 191 end
+  if normalized == "high" or normalized == "max" then return 255 end
   local numeric = tonumber(speed)
   if numeric then
     if numeric <= 0 then return 0 end
-    if numeric <= 33 then return 49 end
-    if numeric <= 66 then return 99 end
-    return 100
+    if numeric <= 4 then
+      if numeric == 1 then return 64 end
+      if numeric == 2 then return 191 end
+      return 255
+    end
+    if numeric <= 33 then return 64 end
+    if numeric <= 66 then return 191 end
+    return 255
   end
-  return 100
+  return 255
 end
 
 return state

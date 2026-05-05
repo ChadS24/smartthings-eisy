@@ -316,7 +316,7 @@ local function switch_on(driver, device, command)
     _, eisy_device = command_address(controller, device, command.component)
   end
   if eisy_device and eisy_device.kind == "fan" then
-    send_command_and_refresh(driver, device, command, { 100 })
+    send_command_and_refresh(driver, device, command, { device_state.fan_speed_to_insteon("high") })
   else
     send_command_and_refresh(driver, device, command, {})
   end
