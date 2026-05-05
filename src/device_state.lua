@@ -15,6 +15,23 @@ local function number_value(prop)
   return tonumber(prop.value) or 0
 end
 
+local function optional_number(prop)
+  if not prop then return nil end
+  local value = tonumber(prop.value)
+  if value then return value end
+  local formatted = tostring(prop.formatted or ""):match("%-?%d+%.?%d*")
+  return tonumber(formatted)
+end
+
+local function thermostat_temperature(prop)
+  local value = optional_number(prop)
+  if not value then return nil end
+  if tostring(prop.uom or "") == "101" or value > 130 then
+    value = value / 2
+  end
+  return value
+end
+
 local function percent_from_property(prop)
   if not prop then return 0 end
   local formatted_percent = tostring(prop.formatted or ""):match("(%d+)%s*%%")
@@ -50,6 +67,46 @@ local function fan_speed_from_property(prop)
   return fan_speed_number(prop and prop.value)
 end
 
+local function thermostat_mode(prop)
+  local formatted = tostring(prop and prop.formatted or ""):lower()
+  if formatted:find("off", 1, true) then return "off" end
+  if formatted:find("heat", 1, true) then return "heat" end
+  if formatted:find("cool", 1, true) then return "cool" end
+  if formatted:find("auto", 1, true) then return "auto" end
+
+  local value = tonumber(prop and prop.value)
+  if value == 0 then return "off" end
+  if value == 1 then return "heat" end
+  if value == 2 then return "cool" end
+  if value == 3 then return "auto" end
+  return nil
+end
+
+local function thermostat_operating_state(prop)
+  local formatted = tostring(prop and prop.formatted or ""):lower()
+  if formatted:find("heat", 1, true) then return "heating" end
+  if formatted:find("cool", 1, true) then return "cooling" end
+  if formatted:find("fan", 1, true) then return "fan only" end
+  if formatted:find("idle", 1, true) or formatted:find("off", 1, true) then return "idle" end
+
+  local value = tonumber(prop and prop.value)
+  if value == 1 then return "heating" end
+  if value == 2 then return "cooling" end
+  if value == 3 then return "fan only" end
+  return "idle"
+end
+
+local function thermostat_fan_mode(prop)
+  local formatted = tostring(prop and prop.formatted or ""):lower()
+  if formatted:find("on", 1, true) then return "on" end
+  if formatted:find("auto", 1, true) then return "auto" end
+
+  local value = tonumber(prop and prop.value)
+  if value == 7 or value == 1 then return "on" end
+  if value == 8 or value == 0 then return "auto" end
+  return nil
+end
+
 function state.emit_component(device, component, kind, properties, component_name)
   local st = properties and properties.ST
   local value = number_value(st)
@@ -61,6 +118,22 @@ function state.emit_component(device, component, kind, properties, component_nam
     device:emit_component_event(component_ref(device, component), value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
   elseif kind == "water" then
     device:emit_component_event(component_ref(device, component), value > 0 and capabilities.waterSensor.water.wet() or capabilities.waterSensor.water.dry())
+  elseif kind == "thermostat" then
+    local component_reference = component_ref(device, component)
+    device:emit_component_event(component_reference, capabilities.thermostatMode.supportedThermostatModes({ "off", "heat", "cool", "auto" }))
+    device:emit_component_event(component_reference, capabilities.thermostatFanMode.supportedThermostatFanModes({ "auto", "on" }))
+
+    local temp = thermostat_temperature(st)
+    if temp then device:emit_component_event(component_reference, capabilities.temperatureMeasurement.temperature({ value = temp, unit = "F" })) end
+    local heat = thermostat_temperature(properties and properties.CLISPH)
+    if heat then device:emit_component_event(component_reference, capabilities.thermostatHeatingSetpoint.heatingSetpoint({ value = heat, unit = "F" })) end
+    local cool = thermostat_temperature(properties and properties.CLISPC)
+    if cool then device:emit_component_event(component_reference, capabilities.thermostatCoolingSetpoint.coolingSetpoint({ value = cool, unit = "F" })) end
+    local mode = thermostat_mode(properties and properties.CLIMD)
+    if mode then device:emit_component_event(component_reference, capabilities.thermostatMode.thermostatMode(mode)) end
+    device:emit_component_event(component_reference, capabilities.thermostatOperatingState.thermostatOperatingState(thermostat_operating_state(properties and properties.CLIHCS)))
+    local fan_mode = thermostat_fan_mode(properties and properties.CLIFS)
+    if fan_mode then device:emit_component_event(component_reference, capabilities.thermostatFanMode.thermostatFanMode(fan_mode)) end
   elseif kind == "fan" then
     device:emit_component_event(component_ref(device, component), switch_event(value))
     device:emit_component_event(component_ref(device, component), capabilities.fanSpeed.fanSpeed(fan_speed_from_property(st)))

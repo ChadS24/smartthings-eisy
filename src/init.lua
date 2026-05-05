@@ -419,6 +419,72 @@ local function set_fan_speed(driver, device, command)
   end
 end
 
+local function thermostat_mode_code(mode)
+  local normalized = tostring(type(mode) == "table" and mode.value or mode or ""):lower()
+  if normalized == "off" then return 0 end
+  if normalized == "heat" then return 1 end
+  if normalized == "cool" then return 2 end
+  if normalized == "auto" then return 3 end
+  return nil
+end
+
+local function thermostat_fan_mode_code(mode)
+  local normalized = tostring(type(mode) == "table" and mode.value or mode or ""):lower()
+  if normalized == "on" then return 7 end
+  if normalized == "auto" then return 8 end
+  return nil
+end
+
+local function thermostat_temp_param(value)
+  local numeric = tonumber(type(value) == "table" and value.value or value)
+  if not numeric then return nil end
+  return math.floor((numeric * 2) + 0.5)
+end
+
+local function set_thermostat_mode(driver, device, command)
+  command.eisy_command = "CLIMD"
+  local mode = command.args and command.args.mode or command.positional_args and command.positional_args[1]
+  local code = thermostat_mode_code(mode)
+  if code == nil then
+    log.warn("Unsupported thermostat mode: " .. tostring(mode))
+    return
+  end
+  send_command_and_refresh(driver, device, command, { code })
+end
+
+local function set_thermostat_fan_mode(driver, device, command)
+  command.eisy_command = "CLIFS"
+  local mode = command.args and command.args.fanMode or command.positional_args and command.positional_args[1]
+  local code = thermostat_fan_mode_code(mode)
+  if code == nil then
+    log.warn("Unsupported thermostat fan mode: " .. tostring(mode))
+    return
+  end
+  send_command_and_refresh(driver, device, command, { code })
+end
+
+local function set_heating_setpoint(driver, device, command)
+  command.eisy_command = "CLISPH"
+  local setpoint = command.args and command.args.temperature or command.positional_args and command.positional_args[1]
+  local value = thermostat_temp_param(setpoint)
+  if not value then
+    log.warn("Invalid thermostat heating setpoint: " .. tostring(setpoint))
+    return
+  end
+  send_command_and_refresh(driver, device, command, { value })
+end
+
+local function set_cooling_setpoint(driver, device, command)
+  command.eisy_command = "CLISPC"
+  local setpoint = command.args and command.args.temperature or command.positional_args and command.positional_args[1]
+  local value = thermostat_temp_param(setpoint)
+  if not value then
+    log.warn("Invalid thermostat cooling setpoint: " .. tostring(setpoint))
+    return
+  end
+  send_command_and_refresh(driver, device, command, { value })
+end
+
 local function refresh_handler(driver, device)
   if device.device_network_id == CONTROLLER_DNI then
     scan_eisy(driver, device)
@@ -456,6 +522,18 @@ local eisy_driver = Driver("eisy-insteon", {
     },
     [capabilities.fanSpeed.ID] = {
       [capabilities.fanSpeed.commands.setFanSpeed.NAME] = set_fan_speed
+    },
+    [capabilities.thermostatMode.ID] = {
+      [capabilities.thermostatMode.commands.setThermostatMode.NAME] = set_thermostat_mode
+    },
+    [capabilities.thermostatFanMode.ID] = {
+      [capabilities.thermostatFanMode.commands.setThermostatFanMode.NAME] = set_thermostat_fan_mode
+    },
+    [capabilities.thermostatHeatingSetpoint.ID] = {
+      [capabilities.thermostatHeatingSetpoint.commands.setHeatingSetpoint.NAME] = set_heating_setpoint
+    },
+    [capabilities.thermostatCoolingSetpoint.ID] = {
+      [capabilities.thermostatCoolingSetpoint.commands.setCoolingSetpoint.NAME] = set_cooling_setpoint
     },
     [capabilities.refresh.ID] = {
       [capabilities.refresh.commands.refresh.NAME] = refresh_handler

@@ -92,6 +92,28 @@ local function is_water_leak_text(text)
   return contains_any(text, { "leak", "water leak", "flood", "moisture" })
 end
 
+local function is_thermostat_node(node)
+  local text = node_text(node)
+  local node_def = lower(node.nodeDefId)
+  local type_text = lower(node.type)
+  return starts_with_any(type_text, {
+        "4.8",
+        "5.3",
+        "5.10",
+        "5.11",
+        "5.14",
+        "5.15",
+        "5.16",
+        "5.17",
+        "5.18",
+        "5.19",
+        "5.20",
+        "5.21"
+      })
+      or starts_with_any(node_def, { "templinc", "thermostat" })
+      or contains_any(text, { "thermostat", "templinc" })
+end
+
 local function wet_node(group)
   for _, node in ipairs(group) do
     if contains_any(node_text(node), { "wet", "water leak" }) then return node end
@@ -107,6 +129,9 @@ local function classify_single(node)
 
   if is_water_leak_text(text) then
     return "water", "eisy-water"
+  end
+  if is_thermostat_node(node) then
+    return "thermostat", "eisy-thermostat"
   end
   if starts_with_any(node_def, { "pir" }) or contains_any(text, { "motion", "occupancy", "2420m", "2842", "2844", "pir" }) then
     return "motion", "eisy-motion"
