@@ -221,7 +221,7 @@ function client.new(opts)
     port = port,
     protocol = protocol,
     base_url = base,
-    timeout = tonumber(opts.timeout) or 8,
+    timeout = tonumber(opts.timeout) or 20,
     auth = basic_auth(opts.username, opts.password)
   }, { __index = client })
 end
@@ -238,13 +238,17 @@ function client:request(path)
     return nil, "HTTPS support is unavailable in this Edge runtime"
   end
   local transport = self.protocol == "https" and https or http
+  local previous_timeout = transport.TIMEOUT
+  transport.TIMEOUT = self.timeout
 
   local ok, success, code, response_headers, status = pcall(transport.request, {
     url = self.base_url .. path,
     method = "GET",
     headers = headers,
+    timeout = self.timeout,
     sink = ltn12.sink.table(body_t)
   })
+  transport.TIMEOUT = previous_timeout
 
   if not ok then
     return nil, tostring(success)

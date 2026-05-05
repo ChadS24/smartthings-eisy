@@ -152,7 +152,8 @@ local function scan_eisy(driver, controller)
       by_address[address] = { child_key = key, component = component, device = eisy_device }
     end
 
-    if not find_child_by_key(driver, key) then
+    local child = find_child_by_key(driver, key)
+    if not child then
       log.info("Creating eISY child device " .. eisy_device.label .. " as " .. eisy_device.profile)
       driver:try_create_device({
         type = "EDGE_CHILD",
@@ -165,6 +166,18 @@ local function scan_eisy(driver, controller)
         vendor_provided_label = eisy_device.label,
         external_id = eisy_device.key
       })
+    elseif child.try_update_metadata then
+      local ok, err = pcall(function()
+        child:try_update_metadata({
+          profile = eisy_device.profile,
+          manufacturer = "Universal Devices",
+          model = "eISY Insteon " .. eisy_device.kind,
+          vendor_provided_label = eisy_device.label
+        })
+      end)
+      if not ok then
+        log.warn("Unable to update eISY child metadata for " .. tostring(eisy_device.label) .. ": " .. tostring(err))
+      end
     end
   end
 
