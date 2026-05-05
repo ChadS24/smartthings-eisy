@@ -22,6 +22,11 @@ local function node_type_prefix(node)
   return lower(node.type):match("^([^.]+)%.") or ""
 end
 
+local function is_insteon_address(address)
+  local b1, b2, b3, group = lower(address):match("^(%x+)%s+(%x+)%s+(%x+)%s+(%d+)$")
+  return b1 ~= nil and #b1 <= 2 and #b2 <= 2 and #b3 <= 2 and group ~= ""
+end
+
 local function split_patterns(value)
   local patterns = {}
   for item in tostring(value or ""):gmatch("[^,]+") do
@@ -51,7 +56,7 @@ local function is_native_insteon_node(node)
   if node_def:match("^z[myb]") then return false end
   if name == "matter" then return false end
 
-  return address:match("^%x%x%s+%x%x%s+%x%x%s+%d+$") ~= nil
+  return is_insteon_address(address)
 end
 
 local function node_text(node)
@@ -71,6 +76,16 @@ end
 
 local function keypad_letter(index)
   return string.char(string.byte("A") + index - 1)
+end
+
+local function keypad_component_name(index, node)
+  local letter = keypad_letter(index)
+  local name = tostring(node.name or node.address)
+  local existing_letter, rest = name:match("^%s*([A-Ha-h])%s*%-%s*(.+)$")
+  if existing_letter and lower(existing_letter) == lower(letter) then
+    return letter .. " - " .. rest
+  end
+  return letter .. " - " .. name
 end
 
 local function classify_single(node)
@@ -169,7 +184,7 @@ function classifier.classify_all(nodes, ignored_patterns)
         if index <= 8 then
           local id = component_id(index)
           components[id] = node.address
-          component_names[id] = keypad_letter(index) .. " - " .. (node.name or node.address)
+          component_names[id] = keypad_component_name(index, node)
         end
       end
       devices[#devices + 1] = {
