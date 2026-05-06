@@ -80,7 +80,7 @@ end
 
 function ws.start(driver, controller_device, opts, on_message)
   if opts.protocol == "https" then
-    log.info("eISY WebSocket over TLS is not implemented; polling fallback remains active")
+    log.info("eISY WebSocket over TLS is not implemented; use HTTP for live WebSocket updates")
     return nil
   end
   if not opts.host or opts.host == "" then return nil end
@@ -116,7 +116,7 @@ function ws.start(driver, controller_device, opts, on_message)
           while not cancelled do
             local frame, frame_err, opcode = read_frame(sock)
             if not frame then
-              log.info("eISY WebSocket subscription closed; polling fallback remains active: " .. tostring(frame_err))
+              log.info("eISY WebSocket subscription closed; reconnecting without polling fallback: " .. tostring(frame_err))
               connected = false
               break
             end
@@ -124,7 +124,7 @@ function ws.start(driver, controller_device, opts, on_message)
               on_message(frame)
             elseif opcode == 8 then
               pcall(function() send_frame(sock, 8, frame) end)
-              log.info("eISY WebSocket subscription closed by eISY; polling fallback remains active")
+              log.info("eISY WebSocket subscription closed by eISY; reconnecting without polling fallback")
               connected = false
               break
             elseif opcode == 9 then
@@ -139,7 +139,7 @@ function ws.start(driver, controller_device, opts, on_message)
         else
           connected = false
           log.info(string.format(
-            "eISY WebSocket subscription unavailable at %s:%s; polling fallback remains active: %s",
+            "eISY WebSocket subscription unavailable at %s:%s; retrying without polling fallback: %s",
             tostring(opts.host),
             tostring(opts.port or 80),
             tostring(header_err or response)

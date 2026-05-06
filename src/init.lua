@@ -23,7 +23,6 @@ local function controller_opts(device)
     port = normalized.port,
     username = device.preferences.eisyUsername,
     password = device.preferences.eisyPassword,
-    polling_interval = tonumber(device.preferences.pollingInterval) or 0,
     ignored_nodes = device.preferences.ignoredNodes or ""
   }
 end
@@ -96,20 +95,6 @@ local function refresh_child(driver, controller, child)
     end
   end
   emit_child_state(driver, child, eisy_device, statuses)
-end
-
-local function refresh_known_statuses(driver, controller)
-  local client = client_for(controller)
-  local statuses, status_err = client:get_all_status()
-  if not statuses then
-    log.warn("Unable to fetch eISY status fallback: " .. tostring(status_err))
-    return
-  end
-
-  local by_key = controller:get_field("eisy_devices_by_key") or {}
-  for key, eisy_device in pairs(by_key) do
-    emit_child_state(driver, find_child_by_key(driver, key), eisy_device, statuses)
-  end
 end
 
 local function apply_event_update(driver, controller, event)
@@ -233,18 +218,6 @@ local function start_controller_threads(driver, controller)
     end
   end)
   controller:set_field("ws_handle", ws_handle)
-
-  if opts.polling_interval > 0 then
-    local poll_timer = controller.thread:call_on_schedule(opts.polling_interval, function()
-      local active_ws = ws_handle and ws_handle.is_connected and ws_handle.is_connected()
-      if active_ws then
-        log.debug("Skipping eISY polling because WebSocket updates are active")
-      else
-        refresh_known_statuses(driver, controller)
-      end
-    end, "eisy status fallback")
-    controller:set_field("poll_timer", poll_timer)
-  end
 end
 
 local function discovery_handler(driver, _, should_continue)
@@ -294,7 +267,6 @@ local function info_changed_handler(driver, device, _, args)
       or old.eisyPort ~= prefs.eisyPort
       or old.eisyUsername ~= prefs.eisyUsername
       or old.eisyPassword ~= prefs.eisyPassword
-      or old.pollingInterval ~= prefs.pollingInterval
       or old.ignoredNodes ~= prefs.ignoredNodes then
     start_controller_threads(driver, device)
   end

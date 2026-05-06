@@ -52,15 +52,6 @@ preferences:
     definition:
       stringType: password
       default: ""
-  - name: pollingInterval
-    title: Fallback polling interval
-    description: Fallback status polling interval in seconds. Use 0 to rely on WebSocket events only.
-    required: true
-    preferenceType: integer
-    definition:
-      minimum: 0
-      maximum: 3600
-      default: 0
   - name: ignoredNodes
     title: Ignored node patterns
     description: Comma-separated node address or name fragments to skip during discovery.
