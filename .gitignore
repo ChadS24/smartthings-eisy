@@ -1,4 +1,5 @@
 test/
+tests/
 *.zip
 *.key
 *.pub
