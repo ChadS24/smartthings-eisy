@@ -25,25 +25,20 @@ This package contains a local SmartThings Edge driver for Universal Devices eISY
 
 ## Install And Test
 
-1. Package the driver:
+1. Enroll and install the driver at https://bestow-regional.api.smartthings.com/invite/d429GWDwQbjo
 
-   ```powershell
-   smartthings edge:drivers:package
-   ```
+2. In the SmartThings app, run nearby device discovery. The driver creates `eISY Controller`.
 
-2. Create or use a SmartThings Edge channel, assign the package, and install it to your hub with the SmartThings CLI.
+3. Open the controller device settings and enter:
 
-3. In the SmartThings app, run nearby device discovery. The driver creates `eISY Controller`.
-
-4. Open the controller device settings and enter:
-   - eISY host or IP
-   - protocol
-   - port
-   - username
+   - eISY host or IP (IP address works best)
+   - protocol (HTTP is faster and uses websockets)
+   - port (80)
+   - username (your eISY username, same as what you use to login to the eISY Admin Console)
    - password
-   - polling interval
+   - polling interval (0 (default) disables polling and uses only websockets. If you have a large number of Insteon devices, polling could cause the 3rd generation SmartThings Hub to crash)
 
-5. Tap `Scan for devices` on the controller, or refresh the controller. Supported Insteon nodes should appear as child devices.
+4. Tap `Scan for devices` on the controller, or refresh the controller. Supported Insteon nodes should appear as child devices.
 
 ## Notes
 

@@ -89,7 +89,7 @@ local function keypad_component_name(index, node)
 end
 
 local function is_water_leak_text(text)
-  return contains_any(text, { "leak", "water leak", "flood", "moisture" })
+  return contains_any(text, { "leak", "water leak", "moisture" })
 end
 
 local function is_motion_text(text)
