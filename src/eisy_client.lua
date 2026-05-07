@@ -7,6 +7,14 @@ local ok_https, https = pcall(function() return cosock.asyncify "ssl.https" end)
 
 local client = {}
 local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local EVENT_STATUS_CONTROLS = {
+  ST = true,
+  CLIMD = true,
+  CLISPH = true,
+  CLISPC = true,
+  CLIHCS = true,
+  CLIFS = true
+}
 
 local function xml_unescape(value)
   if not value then return nil end
@@ -121,11 +129,11 @@ function client.parse_event(xml)
 end
 
 function client.event_statuses(event)
-  if not event or not event.address or event.control ~= "ST" then return nil end
+  if not event or not event.address or not EVENT_STATUS_CONTROLS[event.control] then return nil end
   return {
     [event.address] = {
-      ST = {
-        id = "ST",
+      [event.control] = {
+        id = event.control,
         value = tonumber(event.action) or event.action,
         formatted = event.formatted,
         uom = event.uom
