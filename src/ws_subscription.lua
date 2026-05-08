@@ -5,7 +5,9 @@ local EisyClient = require "eisy_client"
 
 local ws = {}
 local WS_HEARTBEAT = 30
-local WS_HEARTBEAT_GRACE = 5
+local WS_HEARTBEAT_GRACE = 2
+local WS_RETRY_BACKOFF = { 0.01, 1, 10, 30, 60 }
+local WS_MAX_RETRIES = 4
 
 local function mask_payload(payload, mask)
   local out = {}
@@ -78,6 +80,28 @@ local function read_frame(sock)
   return nil, payload_err
 end
 
+local function retry_delay(retries)
+  local index = math.min((tonumber(retries) or 0) + 1, #WS_RETRY_BACKOFF)
+  return WS_RETRY_BACKOFF[index]
+end
+
+local function next_retry(retries)
+  retries = (tonumber(retries) or 0) + 1
+  if retries > WS_MAX_RETRIES then return WS_MAX_RETRIES end
+  return retries
+end
+
+local function route_message(sock, frame, on_message)
+  local event = EisyClient.parse_event(frame)
+  if event.control == "_0" then
+    local hbwait = tonumber(event.action) or WS_HEARTBEAT
+    sock:settimeout(hbwait + WS_HEARTBEAT_GRACE)
+    log.debug("eISY WebSocket heartbeat received")
+    return
+  end
+  on_message(frame)
+end
+
 function ws.start(driver, controller_device, opts, on_message)
   if opts.protocol == "https" then
     log.info("eISY WebSocket over TLS is not implemented; use HTTP for live WebSocket updates")
@@ -89,7 +113,7 @@ function ws.start(driver, controller_device, opts, on_message)
   local connected = false
   local thread = controller_device.thread:call_with_delay(1, function()
     math.randomseed(os.time())
-    local backoff = 5
+    local retries = 0
     while not cancelled do
       local sock = cosock.socket.tcp()
       sock:settimeout(10)
@@ -110,7 +134,7 @@ function ws.start(driver, controller_device, opts, on_message)
         local response, header_err = read_http_headers(sock)
         if response and response:find("101", 1, true) then
           log.info("Connected to eISY WebSocket subscription")
-          backoff = 5
+          retries = 0
           connected = true
           sock:settimeout(WS_HEARTBEAT + WS_HEARTBEAT_GRACE)
           while not cancelled do
@@ -121,7 +145,7 @@ function ws.start(driver, controller_device, opts, on_message)
               break
             end
             if opcode == 1 or opcode == 2 or opcode == 0 then
-              on_message(frame)
+              route_message(sock, frame, on_message)
             elseif opcode == 8 then
               pcall(function() send_frame(sock, 8, frame) end)
               log.info("eISY WebSocket subscription closed by eISY; reconnecting without polling fallback")
@@ -144,7 +168,6 @@ function ws.start(driver, controller_device, opts, on_message)
             tostring(opts.port or 80),
             tostring(header_err or response)
           ))
-          break
         end
       else
         connected = false
@@ -152,8 +175,10 @@ function ws.start(driver, controller_device, opts, on_message)
       end
       pcall(function() sock:close() end)
       connected = false
-      cosock.socket.sleep(backoff)
-      backoff = math.min(backoff * 2, 120)
+      local delay = retry_delay(retries)
+      retries = next_retry(retries)
+      log.info("Attempting eISY WebSocket reconnect in " .. tostring(delay) .. "s")
+      cosock.socket.sleep(delay)
     end
   end, "eisy websocket subscription")
 
