@@ -4,10 +4,39 @@ local state = {}
 local keypad_button_status = capabilities["oftentrust07380.keypadbuttonstatus"]
 
 local function component_ref(device, component_id)
-  if device.profile and device.profile.components then
-    return device.profile.components[component_id] or component_id
+  component_id = component_id or "main"
+  local components = device.profile and device.profile.components
+  if not components then return nil end
+
+  local direct = components[component_id]
+  if direct then return direct end
+
+  for _, component in pairs(components) do
+    if type(component) == "table" and component.id == component_id then
+      return component
+    end
   end
-  return component_id
+  return nil
+end
+
+local function component_supports(component, capability_id)
+  if not component or not capability_id then return false end
+  if not component.capabilities then return true end
+
+  for key, capability in pairs(component.capabilities) do
+    if key == capability_id then return true end
+    if type(capability) == "string" and capability == capability_id then return true end
+    if type(capability) == "table" and (capability.id == capability_id or capability.ID == capability_id) then
+      return true
+    end
+  end
+  return false
+end
+
+local function emit_event(device, component_id, capability_id, event)
+  local component = component_ref(device, component_id)
+  if not component or not component_supports(component, capability_id) then return end
+  device:emit_component_event(component, event)
 end
 
 local function cap_id(capability, fallback)
@@ -151,47 +180,46 @@ function state.emit_component(device, component, kind, properties, component_nam
   component = component or "main"
 
   if kind == "motion" then
-    device:emit_component_event(component_ref(device, component), value > 0 and capabilities.motionSensor.motion.active() or capabilities.motionSensor.motion.inactive())
+    emit_event(device, component, capabilities.motionSensor.ID, value > 0 and capabilities.motionSensor.motion.active() or capabilities.motionSensor.motion.inactive())
   elseif kind == "contact" then
-    device:emit_component_event(component_ref(device, component), value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
+    emit_event(device, component, capabilities.contactSensor.ID, value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
   elseif kind == "water" then
-    device:emit_component_event(component_ref(device, component), value > 0 and capabilities.waterSensor.water.wet() or capabilities.waterSensor.water.dry())
+    emit_event(device, component, capabilities.waterSensor.ID, value > 0 and capabilities.waterSensor.water.wet() or capabilities.waterSensor.water.dry())
   elseif kind == "thermostat" then
-    local component_reference = component_ref(device, component)
-    device:emit_component_event(component_reference, capabilities.thermostatMode.supportedThermostatModes({ "off", "heat", "cool", "auto" }))
-    device:emit_component_event(component_reference, capabilities.thermostatFanMode.supportedThermostatFanModes({ "auto", "on" }))
+    emit_event(device, component, capabilities.thermostatMode.ID, capabilities.thermostatMode.supportedThermostatModes({ "off", "heat", "cool", "auto" }))
+    emit_event(device, component, capabilities.thermostatFanMode.ID, capabilities.thermostatFanMode.supportedThermostatFanModes({ "auto", "on" }))
 
     local temp = thermostat_temperature(st)
     temp = temp or latest_number(device, component, capabilities.temperatureMeasurement, "temperatureMeasurement", "temperature")
-    if temp then device:emit_component_event(component_reference, capabilities.temperatureMeasurement.temperature({ value = temp, unit = "F" })) end
+    if temp then emit_event(device, component, capabilities.temperatureMeasurement.ID, capabilities.temperatureMeasurement.temperature({ value = temp, unit = "F" })) end
     local heat = thermostat_temperature(properties and properties.CLISPH)
     heat = heat or latest_number(device, component, capabilities.thermostatHeatingSetpoint, "thermostatHeatingSetpoint", "heatingSetpoint")
-    if heat then device:emit_component_event(component_reference, capabilities.thermostatHeatingSetpoint.heatingSetpoint({ value = heat, unit = "F" })) end
+    if heat then emit_event(device, component, capabilities.thermostatHeatingSetpoint.ID, capabilities.thermostatHeatingSetpoint.heatingSetpoint({ value = heat, unit = "F" })) end
     local cool = thermostat_temperature(properties and properties.CLISPC)
     cool = cool or latest_number(device, component, capabilities.thermostatCoolingSetpoint, "thermostatCoolingSetpoint", "coolingSetpoint")
-    if cool then device:emit_component_event(component_reference, capabilities.thermostatCoolingSetpoint.coolingSetpoint({ value = cool, unit = "F" })) end
+    if cool then emit_event(device, component, capabilities.thermostatCoolingSetpoint.ID, capabilities.thermostatCoolingSetpoint.coolingSetpoint({ value = cool, unit = "F" })) end
     local mode = thermostat_mode(properties and properties.CLIMD)
     mode = mode or latest_string(device, component, capabilities.thermostatMode, "thermostatMode", "thermostatMode")
-    if mode then device:emit_component_event(component_reference, capabilities.thermostatMode.thermostatMode(mode)) end
+    if mode then emit_event(device, component, capabilities.thermostatMode.ID, capabilities.thermostatMode.thermostatMode(mode)) end
     local operating_state = thermostat_operating_state(properties and properties.CLIHCS)
         or inferred_thermostat_operating_state(mode, temp, heat, cool)
-    device:emit_component_event(component_reference, capabilities.thermostatOperatingState.thermostatOperatingState(operating_state))
+    emit_event(device, component, capabilities.thermostatOperatingState.ID, capabilities.thermostatOperatingState.thermostatOperatingState(operating_state))
     local fan_mode = thermostat_fan_mode(properties and properties.CLIFS)
-    if fan_mode then device:emit_component_event(component_reference, capabilities.thermostatFanMode.thermostatFanMode(fan_mode)) end
+    if fan_mode then emit_event(device, component, capabilities.thermostatFanMode.ID, capabilities.thermostatFanMode.thermostatFanMode(fan_mode)) end
   elseif kind == "fan" then
-    device:emit_component_event(component_ref(device, component), switch_event(value))
-    device:emit_component_event(component_ref(device, component), capabilities.fanSpeed.fanSpeed(fan_speed_from_property(st)))
+    emit_event(device, component, capabilities.switch.ID, switch_event(value))
+    emit_event(device, component, capabilities.fanSpeed.ID, capabilities.fanSpeed.fanSpeed(fan_speed_from_property(st)))
   elseif kind == "dimmer" then
-    device:emit_component_event(component_ref(device, component), switch_event(value))
-    device:emit_component_event(component_ref(device, component), capabilities.switchLevel.level(percent_from_property(st)))
+    emit_event(device, component, capabilities.switch.ID, switch_event(value))
+    emit_event(device, component, capabilities.switchLevel.ID, capabilities.switchLevel.level(percent_from_property(st)))
   elseif kind == "keypad" and component ~= "main" then
     local status = value > 0 and "on" or "off"
-    device:emit_component_event(component_ref(device, component), keypad_button_status.buttonName(component_name or component))
-    device:emit_component_event(component_ref(device, component), keypad_button_status.buttonStatus(status))
+    emit_event(device, component, keypad_button_status.ID, keypad_button_status.buttonName(component_name or component))
+    emit_event(device, component, keypad_button_status.ID, keypad_button_status.buttonStatus(status))
   elseif kind == "iolinc_sensor" then
-    device:emit_component_event(component_ref(device, component), value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
+    emit_event(device, component, capabilities.contactSensor.ID, value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
   else
-    device:emit_component_event(component_ref(device, component), switch_event(value))
+    emit_event(device, component, capabilities.switch.ID, switch_event(value))
   end
 end
 
