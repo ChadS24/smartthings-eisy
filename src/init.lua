@@ -279,6 +279,16 @@ local function command_address(controller, device, component)
   return (eisy_device.components or {})[component or "main"], eisy_device
 end
 
+local function cached_property_uom(eisy_device, address, property_id)
+  for _, node in ipairs(eisy_device and eisy_device.nodes or {}) do
+    if node.address == address then
+      local prop = node.properties and node.properties[property_id]
+      if prop and prop.uom and tostring(prop.uom) ~= "" then return prop.uom end
+    end
+  end
+  return nil
+end
+
 local function preference_changed(old, prefs, name)
   if not old or old[name] == nil then return false end
   return tostring(old[name]) ~= tostring(prefs[name])
@@ -339,13 +349,19 @@ end
 local function send_command_and_refresh(driver, device, command, params)
   local controller = get_controller(driver, device)
   if not controller then return end
-  local address = command_address(controller, device, command.component)
+  local address, eisy_device = command_address(controller, device, command.component)
   if not address then
     log.warn("No eISY node address for command on " .. tostring(device.device_network_id))
     return
   end
   local client = client_for(controller)
-  local _, err = client:command(address, command.eisy_command, params)
+  local command_params = {}
+  for _, param in ipairs(params or {}) do command_params[#command_params + 1] = param end
+  if command.eisy_uom_property then
+    local uom = cached_property_uom(eisy_device, address, command.eisy_uom_property)
+    if uom then command_params[#command_params + 1] = uom end
+  end
+  local _, err = client:command(address, command.eisy_command, command_params)
   if err then
     log.warn("eISY command failed: " .. tostring(err))
     return
@@ -442,6 +458,7 @@ end
 
 local function set_heating_setpoint(driver, device, command)
   command.eisy_command = "CLISPH"
+  command.eisy_uom_property = "CLISPH"
   local setpoint = thermostat_setpoint_arg(command)
   local value = thermostat_temp_param(setpoint)
   if not value then
@@ -453,6 +470,7 @@ end
 
 local function set_cooling_setpoint(driver, device, command)
   command.eisy_command = "CLISPC"
+  command.eisy_uom_property = "CLISPC"
   local setpoint = thermostat_setpoint_arg(command)
   local value = thermostat_temp_param(setpoint)
   if not value then

@@ -1,14 +1,96 @@
 local classifier = {}
 
+local FAMILY_INSTEON = "1"
+local FAMILY_NODESERVER = "10"
+local FAMILY_ZMATTER_ZWAVE = "12"
+local INSTEON_SUBNODE_DIMMABLE = "1"
+local UOM_PERCENTAGE = "51"
+
+local THERMOSTAT_TYPES = {
+  "4.8",
+  "5.3",
+  "5.10",
+  "5.11",
+  "5.14",
+  "5.15",
+  "5.16",
+  "5.17",
+  "5.18",
+  "5.19",
+  "5.20",
+  "5.21"
+}
+
+local DIMMER_NODE_DEFS = {
+  dimmerlamp = true,
+  dimmerlamponly = true,
+  dimmerlamponly_adv = true,
+  dimmerlampswitch = true,
+  dimmerlampswitch_adv = true,
+  dimmermotor = true,
+  dimmermotorswitch = true,
+  dimmermotorswitch_adv = true,
+  dimmerswitch = true,
+  dimmerswitchonly = true,
+  dimmerswitchonly_adv = true,
+  keypaddimmer = true,
+  keypaddimmer_adv = true
+}
+
+local SWITCH_NODE_DEFS = {
+  onoffcontrol = true,
+  onoffcontrol_adv = true,
+  keypadrelay = true,
+  keypadrelay_adv = true,
+  relaylamp = true,
+  relaylampswitch = true,
+  relaylampswitch_adv = true,
+  relayswitch = true,
+  relayswitchonly = true,
+  relayswitchonly_adv = true,
+  relayswitchonlyplusquery = true,
+  relayswitchonlyplusquery_adv = true
+}
+
+local KEYPAD_NODE_DEFS = {
+  keypadbutton = true,
+  keypadbutton_adv = true,
+  keypaddimmer = true,
+  keypaddimmer_adv = true,
+  keypadrelay = true,
+  keypadrelay_adv = true
+}
+
+local STATELESS_NODE_DEFS = {
+  binaryalarm = true,
+  binaryalarm_adv = true,
+  binarycontrol = true,
+  binarycontrol_adv = true,
+  dimmerswitchonly = true,
+  remotelinc2 = true,
+  remotelinc2_adv = true
+}
+
+local WATER_SENSOR_TYPES = {
+  ["16.8"] = true
+}
+
+local MOTION_SENSOR_TYPES = {
+  ["16.1"] = true,
+  ["16.3"] = true,
+  ["16.10"] = true
+}
+
+local CONTACT_SENSOR_TYPES = {
+  ["16.2"] = true,
+  ["16.4"] = true,
+  ["16.5"] = true,
+  ["16.6"] = true,
+  ["16.7"] = true
+}
+
 local function lower(value)
   return tostring(value or ""):lower()
-end
-
-local function contains_any(text, patterns)
-  for _, pattern in ipairs(patterns) do
-    if text:find(pattern, 1, true) then return true end
-  end
-  return false
 end
 
 local function starts_with_any(text, prefixes)
@@ -18,13 +100,48 @@ local function starts_with_any(text, prefixes)
   return false
 end
 
-local function node_type_prefix(node)
-  return lower(node.type):match("^([^.]+)%.") or ""
+local function node_def(node)
+  return lower(node.nodeDefId)
 end
 
-local function is_insteon_address(address)
-  local b1, b2, b3, group = lower(address):match("^(%x+)%s+(%x+)%s+(%x+)%s+(%d+)$")
-  return b1 ~= nil and #b1 <= 2 and #b2 <= 2 and #b3 <= 2 and group ~= ""
+local function type_text(node)
+  return lower(node.type)
+end
+
+local function type_major(node)
+  return type_text(node):match("^(%d+)") or ""
+end
+
+local function type_key(node)
+  local major, minor = type_text(node):match("^(%d+)%.(%d+)")
+  if not major or not minor then return "" end
+  return major .. "." .. minor
+end
+
+local function address_group(address)
+  return tonumber(lower(address):match("%s+(%d+)$"))
+end
+
+local function is_primary_subnode(node)
+  return tostring(address_group(node.address) or "") == INSTEON_SUBNODE_DIMMABLE
+end
+
+local function property(node, id)
+  return node.properties and node.properties[id] or nil
+end
+
+local function property_uom(node, id)
+  local prop = property(node, id)
+  return prop and tostring(prop.uom or "") or ""
+end
+
+local function property_formatted(node, id)
+  local prop = property(node, id)
+  return prop and tostring(prop.formatted or "") or ""
+end
+
+local function has_status(node)
+  return property(node, "ST") ~= nil
 end
 
 local function split_patterns(value)
@@ -44,29 +161,23 @@ local function ignored(node, patterns)
   return false
 end
 
+local function is_insteon_address(address)
+  local b1, b2, b3, group = lower(address):match("^(%x+)%s+(%x+)%s+(%x+)%s+(%d+)$")
+  return b1 ~= nil and #b1 <= 2 and #b2 <= 2 and #b3 <= 2 and group ~= ""
+end
+
 local function is_native_insteon_node(node)
   local address = lower(node.address)
   local family = lower(node.family)
-  local node_def = lower(node.nodeDefId)
-  local name = lower(node.name)
+  local def = node_def(node)
 
   if address:match("^n%d+_") then return false end
   if address:match("^z[myb]") then return false end
-  if family == "10" or family == "12" or family == "14" or family == "15" then return false end
-  if node_def:match("^z[myb]") then return false end
-  if name == "matter" then return false end
+  if family ~= "" and family ~= FAMILY_INSTEON then return false end
+  if family == FAMILY_NODESERVER or family == FAMILY_ZMATTER_ZWAVE then return false end
+  if def:match("^z[myb]") then return false end
 
   return is_insteon_address(address)
-end
-
-local function node_text(node)
-  return lower(table.concat({
-    node.name or "",
-    node.nodeDefId or "",
-    node.type or "",
-    node.deviceClass or "",
-    node.raw or ""
-  }, " "))
 end
 
 local function component_id(index)
@@ -88,85 +199,80 @@ local function keypad_component_name(index, node)
   return letter .. " - " .. name
 end
 
-local function is_water_leak_text(text)
-  return contains_any(text, { "leak", "water leak", "moisture" })
-end
-
-local function is_motion_text(text)
-  return contains_any(text, { "motion", "occupancy", "2420m", "2842", "2844", "pir" })
+local function is_stateless_node(node)
+  return STATELESS_NODE_DEFS[node_def(node)] == true
 end
 
 local function is_thermostat_node(node)
-  local text = node_text(node)
-  local node_def = lower(node.nodeDefId)
-  local type_text = lower(node.type)
-  return starts_with_any(type_text, {
-        "4.8",
-        "5.3",
-        "5.10",
-        "5.11",
-        "5.14",
-        "5.15",
-        "5.16",
-        "5.17",
-        "5.18",
-        "5.19",
-        "5.20",
-        "5.21"
-      })
-      or starts_with_any(node_def, { "templinc", "thermostat" })
-      or contains_any(text, { "thermostat", "templinc" })
+  return starts_with_any(type_text(node), THERMOSTAT_TYPES)
+      or node_def(node):match("^templinc") ~= nil
+      or node_def(node):match("^thermostat") ~= nil
 end
 
-local function wet_node(group)
-  for _, node in ipairs(group) do
-    if contains_any(node_text(node), { "wet", "water leak" }) then return node end
-  end
-  return group[1]
+local function is_dimmable_node(node)
+  return property_uom(node, "ST") == UOM_PERCENTAGE
+      or property_formatted(node, "ST"):find("%%") ~= nil
+      or (type_text(node):sub(1, 2) == "1." and is_primary_subnode(node))
+      or DIMMER_NODE_DEFS[node_def(node)] == true
+end
+
+local function is_fan_node(node)
+  return node_def(node) == "fanlincmotor"
+end
+
+local function is_water_node(node)
+  local def = node_def(node)
+  return WATER_SENSOR_TYPES[type_key(node)] == true
+      or def:match("leak") ~= nil
+      or def:match("water") ~= nil
+      or def:match("moisture") ~= nil
+end
+
+local function is_motion_node(node)
+  local def = node_def(node)
+  return MOTION_SENSOR_TYPES[type_key(node)] == true
+      or def:match("^pir") ~= nil
+      or def:match("motion") ~= nil
+      or def:match("occupancy") ~= nil
+end
+
+local function is_contact_node(node)
+  if is_water_node(node) or is_motion_node(node) then return false end
+  local def = node_def(node)
+  return CONTACT_SENSOR_TYPES[type_key(node)] == true
+      or (type_major(node) == "16" and is_stateless_node(node))
+      or (type_major(node) == "7" and is_stateless_node(node))
+      or def:match("triggerlinc") ~= nil
+      or def:match("contact") ~= nil
+      or def:match("door") ~= nil
+      or def:match("window") ~= nil
+end
+
+local function is_switch_node(node)
+  return SWITCH_NODE_DEFS[node_def(node)] == true
+      or type_major(node) == "2"
 end
 
 local function classify_single(node)
-  local text = node_text(node)
-  local node_def = lower(node.nodeDefId)
-  local type_prefix = node_type_prefix(node)
-  local address = lower(node.address)
-
-  if is_water_leak_text(text) then
+  if is_water_node(node) then
     return "water", "eisy-water"
   end
   if is_thermostat_node(node) then
     return "thermostat", "eisy-thermostat"
   end
-  if starts_with_any(node_def, { "pir" }) or is_motion_text(text) then
+  if is_motion_node(node) then
     return "motion", "eisy-motion"
   end
-  if node_def == "binaryalarm_adv" or contains_any(text, { "binaryalarm", "binary alarm" }) then
+  if is_contact_node(node) then
     return "contact", "eisy-contact"
   end
-  if contains_any(text, { "contact", "door", "window", "gate", "open", "close", "triggerlinc", "2843" }) then
-    return "contact", "eisy-contact"
-  end
-  if node_def == "fanlincmotor" or contains_any(text, { "fanlincmotor", "fanlinc motor", "fan linc motor" }) then
+  if is_fan_node(node) then
     return "fan", "eisy-fan"
   end
-  if starts_with_any(node_def, {
-        "dimmermotor",
-        "dimmerlamp",
-        "dimmerswitch",
-        "keypaddimmer"
-      })
-      or (type_prefix == "1" and address:match("%s1$"))
-      or contains_any(text, { "dimmer", "switchlinc dimmer", "lamplinc", "2477d", "2476d", "2457d" }) then
+  if is_dimmable_node(node) then
     return "dimmer", "eisy-dimmer"
   end
-  if starts_with_any(node_def, {
-        "relaylamp",
-        "relayswitch",
-        "onoffcontrol",
-        "keypadrelay"
-      })
-      or type_prefix == "2"
-      or contains_any(text, { "outlet", "appliancelinc", "on/off", "relay", "switch", "2477s", "2476s", "2635" }) then
+  if is_switch_node(node) then
     return "switch", "eisy-switch"
   end
   return "switch", "eisy-switch"
@@ -181,7 +287,67 @@ local function should_include_node(node, patterns)
   local enabled = lower(node.enabled)
   if not is_native_insteon_node(node) or ignored(node, patterns) then return false end
   if enabled ~= "false" then return true end
-  return is_motion_text(node_text(node))
+  return is_stateless_node(node) or is_motion_node(node) or is_contact_node(node) or is_water_node(node)
+end
+
+local function node_order(node)
+  return tonumber(node.sgid) or address_group(node.address) or 0
+end
+
+local function wet_node(group)
+  for _, node in ipairs(group) do
+    if is_water_node(node) and is_primary_subnode(node) then return node end
+  end
+  for _, node in ipairs(group) do
+    if is_water_node(node) and has_status(node) then return node end
+  end
+  for _, node in ipairs(group) do
+    if is_water_node(node) then return node end
+  end
+  return group[1]
+end
+
+local function group_has(group, predicate)
+  for _, node in ipairs(group) do
+    if predicate(node) then return true end
+  end
+  return false
+end
+
+local function is_fanlinc_group(group)
+  if #group ~= 2 then return false end
+  return group_has(group, is_fan_node) and group_has(group, function(node)
+    return node_def(node) == "dimmerlamponly" or node_def(node) == "dimmerlamponly_adv"
+  end)
+end
+
+local function is_keypad_group(group)
+  if #group > 1 and group_has(group, function(node)
+    return KEYPAD_NODE_DEFS[node_def(node)] == true
+  end) then
+    return true
+  end
+
+  return #group > 2
+      and group_has(group, function(node) return is_dimmable_node(node) or is_switch_node(node) end)
+      and group_has(group, is_stateless_node)
+end
+
+local function iolinc_nodes(group)
+  local relay
+  local sensor
+  for _, node in ipairs(group) do
+    if not relay and is_switch_node(node) then relay = node end
+    if not sensor and is_contact_node(node) then sensor = node end
+  end
+  return relay, sensor
+end
+
+local function is_iolinc_group(group)
+  if #group < 2 then return false end
+  local relay, sensor = iolinc_nodes(group)
+  return relay ~= nil and sensor ~= nil
+      and (group_has(group, function(node) return type_major(node) == "7" end) or #group == 2)
 end
 
 function classifier.classify_all(nodes, ignored_patterns)
@@ -204,13 +370,13 @@ function classifier.classify_all(nodes, ignored_patterns)
   for _, key in ipairs(ordered_keys) do
     local group = grouped[key]
     table.sort(group, function(a, b)
-      return tostring(a.sgid or a.address) < tostring(b.sgid or b.address)
+      local order_a = node_order(a)
+      local order_b = node_order(b)
+      if order_a == order_b then return tostring(a.address) < tostring(b.address) end
+      return order_a < order_b
     end)
 
-    local combined_text = ""
-    for _, node in ipairs(group) do combined_text = combined_text .. " " .. node_text(node) end
-
-    if is_water_leak_text(combined_text) then
+    if group_has(group, is_water_node) then
       local wet = wet_node(group)
       devices[#devices + 1] = {
         key = key,
@@ -221,9 +387,7 @@ function classifier.classify_all(nodes, ignored_patterns)
         components = { main = wet.address },
         nodes = group
       }
-    elseif #group == 2
-        and (lower(group[1].nodeDefId) == "dimmerlamponly" or lower(group[2].nodeDefId) == "dimmerlamponly")
-        and (lower(group[1].nodeDefId) == "fanlincmotor" or lower(group[2].nodeDefId) == "fanlincmotor") then
+    elseif is_fanlinc_group(group) then
       for _, node in ipairs(group) do
         local kind, profile = classify_single(node)
         local fanlinc_suffix = kind == "fan" and ":motor" or ":light"
@@ -237,7 +401,7 @@ function classifier.classify_all(nodes, ignored_patterns)
           nodes = { node }
         }
       end
-    elseif #group > 1 and contains_any(combined_text, { "keypad", "keypadlinc", "kpl" }) then
+    elseif is_keypad_group(group) then
       local components = {}
       local component_names = {}
       for index, node in ipairs(group) do
@@ -257,15 +421,18 @@ function classifier.classify_all(nodes, ignored_patterns)
         component_names = component_names,
         nodes = group
       }
-    elseif #group > 1 and contains_any(combined_text, { "iolinc", "i/o linc", "io linc", "2450" }) then
-      local components = { main = group[1].address, sensor = (group[2] or group[1]).address }
+    elseif is_iolinc_group(group) then
+      local relay, sensor = iolinc_nodes(group)
       devices[#devices + 1] = {
         key = key,
         kind = "iolinc",
         profile = "eisy-iolinc",
-        label = group[1].name or key,
-        primary = group[1].address,
-        components = components,
+        label = (relay or group[1]).name or key,
+        primary = (relay or group[1]).address,
+        components = {
+          main = (relay or group[1]).address,
+          sensor = (sensor or group[2] or group[1]).address
+        },
         nodes = group
       }
     else
