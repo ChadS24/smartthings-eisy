@@ -7,6 +7,8 @@ local ok_https, https = pcall(function() return cosock.asyncify "ssl.https" end)
 
 local client = {}
 local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local MAX_RETRIES = 5
+local RETRY_BACKOFF = { 0.01, 0.10, 0.25, 1, 2 }
 local EVENT_STATUS_CONTROLS = {
   ST = true,
   CLIMD = true,
@@ -229,18 +231,29 @@ function client.new(opts)
     port = port,
     protocol = protocol,
     base_url = base,
-    timeout = tonumber(opts.timeout) or 20,
+    timeout = tonumber(opts.timeout) or 30,
     auth = basic_auth(opts.username, opts.password)
   }, { __index = client })
 end
 
-function client:request(path)
+local function retry_delay(retries)
+  local index = math.min((tonumber(retries) or 0) + 1, #RETRY_BACKOFF)
+  return RETRY_BACKOFF[index]
+end
+
+function client:request(path, opts)
+  opts = opts or {}
+  local retries = tonumber(opts.retries) or 0
   if not self.host or self.host == "" then
     return nil, "eISY host is not configured"
   end
 
   local body_t = {}
-  local headers = { Accept = "application/xml" }
+  local headers = {
+    Accept = "application/xml",
+    Connection = "keep-alive",
+    ["Keep-Alive"] = "5000"
+  }
   if self.auth then headers.Authorization = self.auth end
   if self.protocol == "https" and not ok_https then
     return nil, "HTTPS support is unavailable in this Edge runtime"
@@ -258,20 +271,43 @@ function client:request(path)
   })
   transport.TIMEOUT = previous_timeout
 
+  local retryable = false
+  local err
   if not ok then
-    return nil, tostring(success)
+    err = tostring(success)
+    retryable = true
+  elseif not success then
+    err = tostring(code)
+    retryable = true
+  else
+    code = tonumber(code)
+    if code == 401 then
+      return nil, string.format("HTTP 401 %s", tostring(status or "Unauthorized"))
+    elseif code == 404 and opts.ok404 then
+      return "", nil, response_headers
+    elseif code == 404 and opts.retry404 then
+      err = string.format("HTTP 404 %s", tostring(status or "Not Found"))
+      retryable = true
+    elseif code == 503 then
+      err = string.format("HTTP 503 %s", tostring(status or "Service Unavailable"))
+      retryable = true
+    elseif code < 200 or code >= 300 then
+      return nil, string.format("HTTP %s %s", tostring(code), tostring(status or ""))
+    else
+      return table.concat(body_t), nil, response_headers
+    end
   end
-  if not success then
-    return nil, tostring(code)
+
+  if retryable and retries < MAX_RETRIES then
+    cosock.socket.sleep(retry_delay(retries))
+    opts.retries = retries + 1
+    return self:request(path, opts)
   end
-  if tonumber(code) < 200 or tonumber(code) >= 300 then
-    return nil, string.format("HTTP %s %s", tostring(code), tostring(status or ""))
-  end
-  return table.concat(body_t), nil, response_headers
+  return nil, err
 end
 
 function client:get_nodes()
-  local body, err = self:request("/rest/nodes")
+  local body, err = self:request("/rest/nodes?members=false")
   if not body then return nil, err end
   return client.parse_nodes(body)
 end
@@ -298,7 +334,7 @@ function client:command(address, command, params)
   for _, param in ipairs(params or {}) do
     path = path .. "/" .. url_encode(param)
   end
-  return self:request(path)
+  return self:request(path, { retry404 = true })
 end
 
 return client
