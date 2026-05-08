@@ -307,8 +307,10 @@ function client:request(path, opts)
 
   if retryable and retries < MAX_RETRIES then
     cosock.socket.sleep(retry_delay(retries))
-    opts.retries = retries + 1
-    return self:request(path, opts)
+    local next_opts = {}
+    for key, value in pairs(opts) do next_opts[key] = value end
+    next_opts.retries = retries + 1
+    return self:request(path, next_opts)
   end
   return nil, err
 end

@@ -40,6 +40,12 @@ local function read_http_headers(sock)
   return table.concat(lines, "\n")
 end
 
+local function is_switching_protocols(response)
+  response = tostring(response or ""):gsub("\r", "")
+  return response:match("^HTTP/%d%.%d%s+101%s")
+      and response:lower():find("upgrade:%s*websocket") ~= nil
+end
+
 local function send_frame(sock, opcode, payload)
   payload = payload or ""
   local len = #payload
@@ -64,19 +70,20 @@ local function read_frame(sock)
   local h2, h2_err = sock:receive(1)
   if not h2 then return nil, h2_err end
   local b1, b2 = string.byte(h1), string.byte(h2)
+  local fin = b1 >= 128
   local opcode = b1 % 16
   local len = b2 % 128
   if len == 126 then
-    local ext = assert(sock:receive(2))
+    local ext, ext_err = sock:receive(2)
+    if not ext then return nil, ext_err end
     local a, b = string.byte(ext, 1, 2)
     len = a * 256 + b
   elseif len == 127 then
     return nil, "large websocket frames are not supported"
   end
-  if len == 0 then return "", nil, opcode end
-  local payload, payload_err, partial = sock:receive(len)
-  if payload then return payload, nil, opcode end
-  if partial and #partial > 0 then return partial end
+  if len == 0 then return "", nil, opcode, fin end
+  local payload, payload_err = sock:receive(len)
+  if payload then return payload, nil, opcode, fin end
   return nil, payload_err
 end
 
@@ -100,6 +107,13 @@ local function route_message(sock, frame, on_message)
     return
   end
   on_message(frame)
+end
+
+local function safe_route_message(sock, frame, on_message)
+  local ok, err = pcall(route_message, sock, frame, on_message)
+  if ok then return true end
+  log.warn("eISY WebSocket message handling failed; reconnecting: " .. tostring(err))
+  return false
 end
 
 function ws.start(driver, controller_device, opts, on_message)
@@ -132,20 +146,42 @@ function ws.start(driver, controller_device, opts, on_message)
         if opts.auth then headers[#headers + 1] = "Authorization: " .. opts.auth end
         sock:send(table.concat(headers, "\r\n") .. "\r\n\r\n")
         local response, header_err = read_http_headers(sock)
-        if response and response:find("101", 1, true) then
+        if is_switching_protocols(response) then
           log.info("Connected to eISY WebSocket subscription")
           retries = 0
           connected = true
           sock:settimeout(WS_HEARTBEAT + WS_HEARTBEAT_GRACE)
+          local fragment_parts
           while not cancelled do
-            local frame, frame_err, opcode = read_frame(sock)
+            local frame, frame_err, opcode, fin = read_frame(sock)
             if not frame then
               log.info("eISY WebSocket subscription closed; reconnecting without polling fallback: " .. tostring(frame_err))
               connected = false
               break
             end
-            if opcode == 1 or opcode == 2 or opcode == 0 then
-              route_message(sock, frame, on_message)
+            if opcode == 1 or opcode == 2 then
+              if fin then
+                if not safe_route_message(sock, frame, on_message) then
+                  connected = false
+                  break
+                end
+              else
+                fragment_parts = { frame }
+              end
+            elseif opcode == 0 then
+              if fragment_parts then
+                fragment_parts[#fragment_parts + 1] = frame
+                if fin then
+                  local message = table.concat(fragment_parts)
+                  fragment_parts = nil
+                  if not safe_route_message(sock, message, on_message) then
+                    connected = false
+                    break
+                  end
+                end
+              else
+                log.debug("Ignoring unexpected eISY WebSocket continuation frame")
+              end
             elseif opcode == 8 then
               pcall(function() send_frame(sock, 8, frame) end)
               log.info("eISY WebSocket subscription closed by eISY; reconnecting without polling fallback")
