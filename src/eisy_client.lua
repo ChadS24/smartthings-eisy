@@ -9,6 +9,7 @@ local client = {}
 local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 local MAX_RETRIES = 5
 local RETRY_BACKOFF = { 0.01, 0.10, 0.25, 1, 2 }
+local EMPTY_XML_RESPONSE = '<?xml version="1.0" encoding="UTF-8"?>'
 local EVENT_STATUS_CONTROLS = {
   ST = true,
   CLIMD = true,
@@ -280,7 +281,7 @@ function client:request(path, opts)
     err = tostring(code)
     retryable = true
   else
-    code = tonumber(code)
+    code = tonumber(code) or 0
     if code == 401 then
       return nil, string.format("HTTP 401 %s", tostring(status or "Unauthorized"))
     elseif code == 404 and opts.ok404 then
@@ -294,7 +295,13 @@ function client:request(path, opts)
     elseif code < 200 or code >= 300 then
       return nil, string.format("HTTP %s %s", tostring(code), tostring(status or ""))
     else
-      return table.concat(body_t), nil, response_headers
+      local body = table.concat(body_t)
+      if body == EMPTY_XML_RESPONSE then
+        err = "empty XML response"
+        retryable = true
+      else
+        return body, nil, response_headers
+      end
     end
   end
 
