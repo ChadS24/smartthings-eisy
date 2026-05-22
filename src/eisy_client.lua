@@ -165,6 +165,10 @@ function client.event_statuses(event)
   }
 end
 
+function client.event_requires_refresh(event)
+  return event and EVENT_COMMAND_STATUS_VALUES[event.control] ~= nil
+end
+
 local function basic_auth(username, password)
   if not username or username == "" then return nil end
   return "Basic " .. client.base64_encode(username .. ":" .. (password or ""))

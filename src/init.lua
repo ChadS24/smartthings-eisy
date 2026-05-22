@@ -98,17 +98,21 @@ local function refresh_child(driver, controller, child)
 end
 
 local function apply_event_update(driver, controller, event)
-  local statuses = EisyClient.event_statuses(event)
-  if not statuses then return false end
-
   local by_address = controller:get_field("eisy_devices_by_address") or {}
   local mapped = by_address[event.address]
+  if EisyClient.event_requires_refresh(event) then
+    if not mapped then return true end
+    local child = find_child_by_key(driver, mapped.child_key)
+    if child then refresh_child(driver, controller, child) end
+    return true
+  end
+
+  local statuses = EisyClient.event_statuses(event)
+  if not statuses then return false end
   if not mapped then return true end
 
   local child = find_child_by_key(driver, mapped.child_key)
-  if child then
-    emit_child_state(driver, child, mapped.device, statuses)
-  end
+  if child then emit_child_state(driver, child, mapped.device, statuses) end
   return true
 end
 
