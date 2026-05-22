@@ -18,6 +18,12 @@ local EVENT_STATUS_CONTROLS = {
   CLIHCS = true,
   CLIFS = true
 }
+local EVENT_COMMAND_STATUS_VALUES = {
+  DON = 255,
+  DFON = 255,
+  DOF = 0,
+  DFOF = 0
+}
 
 local function xml_unescape(value)
   if not value then return nil end
@@ -132,14 +138,28 @@ function client.parse_event(xml)
 end
 
 function client.event_statuses(event)
-  if not event or not event.address or not EVENT_STATUS_CONTROLS[event.control] then return nil end
+  if not event or not event.address then return nil end
+  local control = event.control
+  local status_id = control
+  local value = tonumber(event.action) or event.action
+  local formatted = event.formatted
+  local uom = event.uom
+
+  if EVENT_COMMAND_STATUS_VALUES[control] ~= nil then
+    status_id = "ST"
+    value = tonumber(event.action) or EVENT_COMMAND_STATUS_VALUES[control]
+    if value == 0 and not formatted then formatted = "0%" end
+  elseif not EVENT_STATUS_CONTROLS[control] then
+    return nil
+  end
+
   return {
     [event.address] = {
-      [event.control] = {
-        id = event.control,
-        value = tonumber(event.action) or event.action,
-        formatted = event.formatted,
-        uom = event.uom
+      [status_id] = {
+        id = status_id,
+        value = value,
+        formatted = formatted,
+        uom = uom
       }
     }
   }
