@@ -4,6 +4,8 @@ components:
     capabilities:
       - id: oftentrust07380.scanfordevices
         version: 1
+      - id: oftentrust07380.addscenesfromisy
+        version: 1
       - id: refresh
         version: 1
     categories:
@@ -55,6 +57,14 @@ preferences:
   - name: ignoredNodes
     title: Ignored node patterns
     description: Comma-separated node address or name fragments to skip during discovery.
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      default: ""
+  - name: sceneIds
+    title: ISY scene IDs
+    description: Comma-separated ISY scene/group IDs to expose in SmartThings.
     required: false
     preferenceType: string
     definition:

@@ -1,0 +1,10 @@
+{
+  "name": "addScenesFromIsy",
+  "attributes": {},
+  "commands": {
+    "add": {
+      "name": "add",
+      "arguments": []
+    }
+  }
+}

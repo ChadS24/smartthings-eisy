@@ -1,0 +1,29 @@
+{
+  "dashboard": {
+    "states": [],
+    "actions": [
+      {
+        "displayType": "pushButton",
+        "pushButton": {
+          "command": "add"
+        }
+      }
+    ],
+    "basicPlus": []
+  },
+  "detailView": [
+    {
+      "label": "Add Scenes from ISY",
+      "displayType": "pushButton",
+      "pushButton": {
+        "command": "add"
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [],
+    "actions": []
+  },
+  "id": "oftentrust07380.addscenesfromisy",
+  "version": 1
+}

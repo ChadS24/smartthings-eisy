@@ -10,11 +10,14 @@ local child_identity = require "child_identity"
 local isy_constants = require "isy_constants"
 local isy_events = require "isy_events"
 local isy_model = require "isy_model"
+local scene_manager = require "scene_manager"
 
 local CONTROLLER_DNI = "eisy-controller"
 local scan_capability = capabilities["oftentrust07380.scanfordevices"]
+local add_scenes_capability = capabilities["oftentrust07380.addscenesfromisy"]
 local handle_child_info_changed
 local scan_eisy
+local add_scenes_from_isy
 local get_store
 
 local function controller_opts(device)
@@ -79,6 +82,45 @@ local function child_key(driver, controller, eisy_device)
   end)
 end
 
+local function scene_child_key(driver, controller, scene)
+  local store = get_store(controller)
+  return scene_manager.select_scene_child_key(store.uuid, scene.id, function(candidate)
+    return find_child_by_key(driver, candidate)
+  end)
+end
+
+local function scene_id_for_child(device)
+  local persisted = device.get_field and device:get_field("scene_id")
+  if persisted and persisted ~= "" then return persisted end
+  return scene_manager.scene_id_from_child_key(device_child_key(device))
+end
+
+local function is_scene_child(device)
+  return scene_id_for_child(device) ~= nil
+end
+
+local function remember_scene_child(child, scene)
+  if not child or not child.set_field then return end
+  if scene and scene.id then child:set_field("scene_id", scene.id, { persist = true }) end
+  if scene and scene.name then child:set_field("scene_name", scene.name, { persist = true }) end
+end
+
+local function rebuild_scene_mappings(driver, controller)
+  local by_address = {}
+  for _, device in ipairs(driver:get_devices()) do
+    if device.device_network_id ~= CONTROLLER_DNI then
+      local scene_id = scene_id_for_child(device)
+      if scene_id then
+        local key = device_child_key(device)
+        by_address[scene_id] = { child_key = key, address = scene_id }
+        remember_scene_child(device, { id = scene_id })
+      end
+    end
+  end
+  controller:set_field("eisy_scenes_by_address", by_address)
+  return by_address
+end
+
 local function emit_child_state(driver, child, eisy_device, statuses)
   if child and eisy_device and statuses then
     device_state.emit_device(driver, child, eisy_device, statuses)
@@ -136,7 +178,26 @@ local function emit_mapped_component(child, mapped, store)
   )
 end
 
+local function refresh_scene_child(controller, child)
+  local scene_id = scene_id_for_child(child)
+  if not scene_id then return false end
+  local client = client_for(controller)
+  local status, err = client:get_node_status(scene_id)
+  if status and status.ST then
+    local store = get_store(controller)
+    store:update_status(scene_id, status)
+    device_state.emit_component(child, "main", "switch", status)
+  elseif err then
+    log.info("Scene status is unavailable for ISY scene " .. tostring(scene_id) .. ": " .. tostring(err))
+  else
+    log.info("Scene status did not include ST for ISY scene " .. tostring(scene_id))
+  end
+  return true
+end
+
 local function refresh_child(driver, controller, child)
+  if refresh_scene_child(controller, child) then return end
+
   local by_key = controller:get_field("eisy_devices_by_key") or {}
   local key = device_child_key(child)
   local eisy_device = by_key[key]
@@ -223,6 +284,18 @@ local function apply_event_update(driver, controller, routed)
   if not routed.address then return false end
   local by_address = controller:get_field("eisy_devices_by_address") or {}
   local mapped = by_address[routed.address]
+  if not mapped then
+    local scene_by_address = controller:get_field("eisy_scenes_by_address") or rebuild_scene_mappings(driver, controller)
+    local scene_mapped = scene_by_address[routed.address]
+    if scene_mapped and routed.kind == "status" and routed.property then
+      store:update_status(routed.address, { [routed.property.id] = routed.property })
+      local child = find_child_by_key(driver, scene_mapped.child_key)
+      if child then
+        device_state.emit_component(child, "main", "switch", store:get_node(routed.address):snapshot_properties())
+      end
+      return true
+    end
+  end
   if not mapped then return true end
 
   if routed.kind == "status" and routed.property then
@@ -324,6 +397,78 @@ scan_eisy = function(driver, controller)
   end
 end
 
+add_scenes_from_isy = function(driver, controller)
+  local opts = controller_opts(controller)
+  if not opts.host or opts.host == "" then
+    log.info("eISY host is not configured yet")
+    return
+  end
+
+  local ids = scene_manager.parse_scene_ids(controller.preferences.sceneIds)
+  if #ids == 0 then
+    log.info("No ISY scene IDs are configured")
+    return
+  end
+
+  local client = client_for(controller)
+  local store = get_store(controller)
+  if not store.uuid then
+    local config = client:get_config()
+    if config then
+      store.uuid = config.uuid
+      store.model = config.model
+      store.name = config.name
+    end
+  end
+
+  local scenes, scenes_err = client:get_scenes()
+  if not scenes then
+    log.warn("Unable to fetch ISY scenes: " .. tostring(scenes_err))
+    return
+  end
+
+  local selected, missing = scene_manager.selected_scenes(controller.preferences.sceneIds, scenes)
+  for _, id in ipairs(missing) do
+    log.warn("Configured ISY scene was not found and will not be added: " .. tostring(id))
+  end
+
+  for _, scene in ipairs(selected) do
+    local key = scene_child_key(driver, controller, scene)
+    local child = find_child_by_key(driver, key)
+    if not child then
+      log.info("Creating ISY scene child device " .. tostring(scene.name))
+      driver:try_create_device({
+        type = "EDGE_CHILD",
+        parent_device_id = controller.id,
+        parent_assigned_child_key = key,
+        label = scene.name,
+        profile = "eisy-scene",
+        manufacturer = "Universal Devices",
+        model = "eISY Scene",
+        vendor_provided_label = scene.name,
+        external_id = "scene:" .. scene.id
+      })
+    else
+      remember_scene_child(child, scene)
+      if child.try_update_metadata then
+        local ok, err = pcall(function()
+          child:try_update_metadata({
+            profile = "eisy-scene",
+            manufacturer = "Universal Devices",
+            model = "eISY Scene",
+            vendor_provided_label = scene.name
+          })
+        end)
+        if not ok then
+          log.warn("Unable to update ISY scene metadata for " .. tostring(scene.name) .. ": " .. tostring(err))
+        end
+      end
+    end
+  end
+
+  rebuild_scene_mappings(driver, controller)
+end
+
 local function stop_controller_threads(controller)
   local poll_timer = controller:get_field("poll_timer")
   if poll_timer and poll_timer.cancel then poll_timer:cancel() end
@@ -344,6 +489,7 @@ end
 local function start_controller_threads(driver, controller)
   stop_controller_threads(controller)
   scan_eisy(driver, controller)
+  rebuild_scene_mappings(driver, controller)
 
   local opts = controller_opts(controller)
   if not opts.host or opts.host == "" then return end
@@ -386,20 +532,31 @@ local function added_handler(driver, device)
   if device.device_network_id == CONTROLLER_DNI then
     start_controller_threads(driver, device)
   else
+    if is_scene_child(device) then
+      remember_scene_child(device, { id = scene_id_for_child(device) })
+    end
     local controller = get_controller(driver, device)
-    if controller then refresh_child(driver, controller, device) end
+    if controller then
+      rebuild_scene_mappings(driver, controller)
+      refresh_child(driver, controller, device)
+    end
   end
 end
 
 local function init_handler(driver, device)
   if device.device_network_id == CONTROLLER_DNI then
     start_controller_threads(driver, device)
+  elseif is_scene_child(device) then
+    remember_scene_child(device, { id = scene_id_for_child(device) })
   end
 end
 
-local function removed_handler(_, device)
+local function removed_handler(driver, device)
   if device.device_network_id == CONTROLLER_DNI then
     stop_controller_threads(device)
+  elseif is_scene_child(device) then
+    local controller = get_controller(driver, device)
+    if controller then rebuild_scene_mappings(driver, controller) end
   end
 end
 
@@ -517,7 +674,30 @@ local function send_command_and_refresh(driver, device, command, params)
   refresh_child(driver, controller, device)
 end
 
+local function send_scene_switch_command(driver, device, eisy_command)
+  local scene_id = scene_id_for_child(device)
+  if not scene_id then return false end
+  local controller = get_controller(driver, device)
+  if not controller then
+    log.warn("No eISY controller found for ISY scene command on " .. tostring(device.device_network_id))
+    return true
+  end
+  local client = client_for(controller)
+  local _, err = client:command(scene_id, eisy_command, {})
+  if err then
+    log.warn("ISY scene command failed: " .. tostring(err))
+    return true
+  end
+  if eisy_command == "DON" then
+    device:emit_event(capabilities.switch.switch.on())
+  elseif eisy_command == "DOF" then
+    device:emit_event(capabilities.switch.switch.off())
+  end
+  return true
+end
+
 local function switch_on(driver, device, command)
+  if send_scene_switch_command(driver, device, "DON") then return end
   command.eisy_command = "DON"
   local controller = get_controller(driver, device)
   local eisy_device
@@ -533,6 +713,7 @@ local function switch_on(driver, device, command)
 end
 
 local function switch_off(driver, device, command)
+  if send_scene_switch_command(driver, device, "DOF") then return end
   command.eisy_command = "DOF"
   send_command_and_refresh(driver, device, command, {})
 end
@@ -647,6 +828,16 @@ local function scan_button_handler(driver, device)
   if controller then scan_eisy(driver, controller) end
 end
 
+local function add_scenes_button_handler(driver, device)
+  if device.device_network_id == CONTROLLER_DNI then
+    add_scenes_from_isy(driver, device)
+    return
+  end
+
+  local controller = get_controller(driver, device)
+  if controller then add_scenes_from_isy(driver, controller) end
+end
+
 local eisy_driver = Driver("eisy-insteon", {
   discovery = discovery_handler,
   lifecycle_handlers = {
@@ -683,6 +874,9 @@ local eisy_driver = Driver("eisy-insteon", {
     },
     [scan_capability.ID] = {
       [scan_capability.commands.scan.NAME] = scan_button_handler
+    },
+    [add_scenes_capability.ID] = {
+      [add_scenes_capability.commands.add.NAME] = add_scenes_button_handler
     }
   }
 })
