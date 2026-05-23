@@ -1,8 +1,6 @@
 local classifier = {}
+local isy_constants = require "isy_constants"
 
-local FAMILY_INSTEON = "1"
-local FAMILY_NODESERVER = "10"
-local FAMILY_ZMATTER_ZWAVE = "12"
 local INSTEON_SUBNODE_DIMMABLE = "1"
 local UOM_PERCENTAGE = "51"
 
@@ -144,6 +142,10 @@ local function has_status(node)
   return property(node, "ST") ~= nil
 end
 
+local function has_battery(node)
+  return property(node, "BATLVL") ~= nil
+end
+
 local function split_patterns(value)
   local patterns = {}
   for item in tostring(value or ""):gmatch("[^,]+") do
@@ -173,8 +175,8 @@ local function is_native_insteon_node(node)
 
   if address:match("^n%d+_") then return false end
   if address:match("^z[myb]") then return false end
-  if family ~= "" and family ~= FAMILY_INSTEON then return false end
-  if family == FAMILY_NODESERVER or family == FAMILY_ZMATTER_ZWAVE then return false end
+  if family ~= "" and family ~= isy_constants.FAMILY_INSTEON then return false end
+  if family == isy_constants.FAMILY_NODESERVER or family == isy_constants.FAMILY_ZMATTER_ZWAVE then return false end
   if def:match("^z[myb]") then return false end
 
   return is_insteon_address(address)
@@ -314,6 +316,13 @@ local function group_has(group, predicate)
   return false
 end
 
+local function profile_with_battery(profile, kind, group)
+  if (kind == "motion" or kind == "contact" or kind == "water") and group_has(group, has_battery) then
+    return profile .. "-battery"
+  end
+  return profile
+end
+
 local function is_fanlinc_group(group)
   if #group ~= 2 then return false end
   return group_has(group, is_fan_node) and group_has(group, function(node)
@@ -381,7 +390,7 @@ function classifier.classify_all(nodes, ignored_patterns)
       devices[#devices + 1] = {
         key = key,
         kind = "water",
-        profile = "eisy-water",
+        profile = profile_with_battery("eisy-water", "water", group),
         label = group[1].name or wet.name or key,
         primary = wet.address,
         components = { main = wet.address },
@@ -440,7 +449,7 @@ function classifier.classify_all(nodes, ignored_patterns)
       devices[#devices + 1] = {
         key = key,
         kind = kind,
-        profile = profile,
+        profile = profile_with_battery(profile, kind, group),
         label = group[1].name or key,
         primary = group[1].address,
         components = { main = group[1].address },

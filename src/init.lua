@@ -6,10 +6,16 @@ local EisyClient = require "eisy_client"
 local classifier = require "node_classifier"
 local device_state = require "device_state"
 local ws_subscription = require "ws_subscription"
+local child_identity = require "child_identity"
+local isy_constants = require "isy_constants"
+local isy_events = require "isy_events"
+local isy_model = require "isy_model"
 
 local CONTROLLER_DNI = "eisy-controller"
 local scan_capability = capabilities["oftentrust07380.scanfordevices"]
 local handle_child_info_changed
+local scan_eisy
+local get_store
 
 local function controller_opts(device)
   local normalized = EisyClient.normalize_config({
@@ -53,10 +59,6 @@ local function find_device_by_dni(driver, dni)
   return nil
 end
 
-local function child_key(eisy_device)
-  return "eisy:" .. eisy_device.key:gsub("%s+", "_"):gsub("[^%w%-%._:]", "_")
-end
-
 local function device_child_key(device)
   if device.parent_assigned_child_key then return device.parent_assigned_child_key end
   if device.get_parent_assigned_child_key then return device:get_parent_assigned_child_key() end
@@ -70,10 +72,68 @@ local function find_child_by_key(driver, key)
   return nil
 end
 
+local function child_key(driver, controller, eisy_device)
+  local store = get_store(controller)
+  return child_identity.select_child_key(store.uuid, eisy_device, function(candidate)
+    return find_child_by_key(driver, candidate)
+  end)
+end
+
 local function emit_child_state(driver, child, eisy_device, statuses)
   if child and eisy_device and statuses then
     device_state.emit_device(driver, child, eisy_device, statuses)
   end
+end
+
+local function component_kind(eisy_device, component)
+  if eisy_device and eisy_device.kind == "iolinc" and component == "sensor" then
+    return "iolinc_sensor"
+  end
+  return eisy_device and eisy_device.kind
+end
+
+get_store = function(controller)
+  local store = controller:get_field("isy_store")
+  if not store then
+    store = isy_model.new_store()
+    controller:set_field("isy_store", store)
+  end
+  return store
+end
+
+local function node_statuses(store, addresses)
+  local statuses = {}
+  for _, address in ipairs(addresses or {}) do
+    local node = store:get_node(address)
+    if node then statuses[address] = node:snapshot_properties() end
+  end
+  return statuses
+end
+
+local function component_addresses(eisy_device)
+  local addresses = {}
+  local seen = {}
+  for _, address in pairs(eisy_device and eisy_device.components or {}) do
+    if address and not seen[address] then
+      seen[address] = true
+      addresses[#addresses + 1] = address
+    end
+  end
+  return addresses
+end
+
+local function emit_mapped_component(child, mapped, store)
+  if not child or not mapped or not mapped.device or not mapped.address then return end
+  local node = store:get_node(mapped.address)
+  if not node then return end
+  local eisy_device = mapped.device
+  device_state.emit_component(
+    child,
+    mapped.component or "main",
+    component_kind(eisy_device, mapped.component or "main"),
+    node:snapshot_properties(),
+    eisy_device.component_names and eisy_device.component_names[mapped.component or "main"]
+  )
 end
 
 local function refresh_child(driver, controller, child)
@@ -85,38 +145,105 @@ local function refresh_child(driver, controller, child)
     return
   end
   local client = client_for(controller)
-  local statuses = {}
-  for _, address in pairs(eisy_device.components or {}) do
+  local store = get_store(controller)
+  for _, address in ipairs(component_addresses(eisy_device)) do
     local status, err = client:get_node_status(address)
     if status then
-      statuses[address] = status
+      store:update_status(address, status)
     else
       log.warn("Unable to refresh eISY node " .. tostring(address) .. ": " .. tostring(err))
     end
   end
-  emit_child_state(driver, child, eisy_device, statuses)
+  emit_child_state(driver, child, eisy_device, node_statuses(store, component_addresses(eisy_device)))
 end
 
-local function apply_event_update(driver, controller, event)
-  local by_address = controller:get_field("eisy_devices_by_address") or {}
-  local mapped = by_address[event.address]
-  if EisyClient.event_requires_refresh(event) then
-    if not mapped then return true end
-    local child = find_child_by_key(driver, mapped.child_key)
-    if child then refresh_child(driver, controller, child) end
+local function schedule_node_refresh(driver, controller, address, delay)
+  if not address then return end
+  local pending = controller:get_field("pending_node_refreshes") or {}
+  if pending[address] then return end
+  controller:set_field("pending_node_refreshes", pending)
+
+  pending[address] = controller.thread:call_with_delay(delay or 1, function()
+    pending[address] = nil
+    local by_address = controller:get_field("eisy_devices_by_address") or {}
+    local mapped = by_address[address]
+    if not mapped then return end
+
+    local client = client_for(controller)
+    local status, err = client:get_node_status(address)
+    if not status then
+      log.warn("Unable to refresh eISY node " .. tostring(address) .. ": " .. tostring(err))
+      return
+    end
+
+    local store = get_store(controller)
+    store:update_status(address, status)
+    emit_mapped_component(find_child_by_key(driver, mapped.child_key), mapped, store)
+  end, "eisy debounced node refresh")
+end
+
+local function schedule_scan(driver, controller, delay)
+  local existing = controller:get_field("pending_scan")
+  if existing then return end
+  controller:set_field("pending_scan", controller.thread:call_with_delay(delay or 2, function()
+    controller:set_field("pending_scan", nil)
+    scan_eisy(driver, controller)
+  end, "eisy debounced scan"))
+end
+
+local function apply_event_update(driver, controller, routed)
+  local store = get_store(controller)
+  if routed.kind == "heartbeat" then
+    store.last_heartbeat = os.time()
     return true
   end
 
-  local statuses = EisyClient.event_statuses(event)
-  if not statuses then return false end
+  if routed.requires_scan then
+    schedule_scan(driver, controller, 2)
+    return true
+  end
+
+  if routed.kind == "system_config" then
+    return true
+  end
+
+  if routed.kind == "system_status" then
+    store.last_system_status = routed.action
+    return true
+  end
+
+  if routed.kind == "progress" then
+    if routed.address and routed.property then
+      local node = store:get_node(routed.address)
+      if node then node:update_property(routed.property) end
+    end
+    return true
+  end
+
+  if not routed.address then return false end
+  local by_address = controller:get_field("eisy_devices_by_address") or {}
+  local mapped = by_address[routed.address]
   if not mapped then return true end
 
-  local child = find_child_by_key(driver, mapped.child_key)
-  if child then emit_child_state(driver, child, mapped.device, statuses) end
+  if routed.kind == "status" and routed.property then
+    store:update_status(routed.address, { [routed.property.id] = routed.property })
+    emit_mapped_component(find_child_by_key(driver, mapped.child_key), mapped, store)
+    return true
+  end
+
+  if routed.kind == "control" and routed.property then
+    if not isy_constants.EVENT_PROPS_IGNORED[routed.property.id] then
+      local node = store:get_node(routed.address)
+      if node then node:update_property(routed.property) end
+    end
+    schedule_node_refresh(driver, controller, routed.address, 1)
+    return true
+  end
+
   return true
 end
 
-local function scan_eisy(driver, controller)
+scan_eisy = function(driver, controller)
   local opts = controller_opts(controller)
   if not opts.host or opts.host == "" then
     log.info("eISY host is not configured yet")
@@ -124,21 +251,32 @@ local function scan_eisy(driver, controller)
   end
 
   local client = client_for(controller)
+  local store = get_store(controller)
+  local config, config_err = client:get_config()
+  if config then
+    store.uuid = config.uuid
+    store.model = config.model
+    store.name = config.name
+  elseif config_err then
+    log.warn("Unable to fetch eISY config; continuing with node discovery: " .. tostring(config_err))
+  end
+
   local nodes, nodes_err = client:get_nodes()
   if not nodes then
     log.warn("Unable to fetch eISY nodes: " .. tostring(nodes_err))
     return
   end
+  store:replace_nodes(nodes)
 
-  local eisy_devices = classifier.classify_all(nodes, opts.ignored_nodes)
+  local eisy_devices = classifier.classify_all(store:as_node_list(), opts.ignored_nodes)
   local by_key = {}
   local by_address = {}
   for _, eisy_device in ipairs(eisy_devices) do
-    local key = child_key(eisy_device)
+    local key = child_key(driver, controller, eisy_device)
     eisy_device.child_key = key
     by_key[key] = eisy_device
     for component, address in pairs(eisy_device.components or {}) do
-      by_address[address] = { child_key = key, component = component, device = eisy_device }
+      by_address[address] = { child_key = key, component = component, address = address, device = eisy_device }
     end
 
     local child = find_child_by_key(driver, key)
@@ -170,13 +308,16 @@ local function scan_eisy(driver, controller)
     end
   end
 
-  controller:set_field("eisy_devices_by_key", by_key, { persist = true })
-  controller:set_field("eisy_devices_by_address", by_address, { persist = true })
+  controller:set_field("eisy_devices_by_key", by_key)
+  controller:set_field("eisy_devices_by_address", by_address)
 
   local statuses, status_err = client:get_all_status()
   if statuses then
+    for address, properties in pairs(statuses) do
+      store:update_status(address, properties)
+    end
     for key, eisy_device in pairs(by_key) do
-      emit_child_state(driver, find_child_by_key(driver, key), eisy_device, statuses)
+      emit_child_state(driver, find_child_by_key(driver, key), eisy_device, node_statuses(store, component_addresses(eisy_device)))
     end
   else
     log.warn("Unable to fetch eISY status: " .. tostring(status_err))
@@ -186,9 +327,17 @@ end
 local function stop_controller_threads(controller)
   local poll_timer = controller:get_field("poll_timer")
   if poll_timer and poll_timer.cancel then poll_timer:cancel() end
+  local pending_scan = controller:get_field("pending_scan")
+  if pending_scan and pending_scan.cancel then pending_scan:cancel() end
+  local pending = controller:get_field("pending_node_refreshes") or {}
+  for _, timer in pairs(pending) do
+    if timer and timer.cancel then timer:cancel() end
+  end
   local ws_handle = controller:get_field("ws_handle")
   if ws_handle and ws_handle.cancel then ws_handle.cancel() end
   controller:set_field("poll_timer", nil)
+  controller:set_field("pending_scan", nil)
+  controller:set_field("pending_node_refreshes", nil)
   controller:set_field("ws_handle", nil)
 end
 
@@ -205,20 +354,15 @@ local function start_controller_threads(driver, controller)
     host = opts.host,
     protocol = opts.protocol,
     port = opts.port,
-    auth = rest_client.auth
+    auth = rest_client.auth,
+    on_status = function(status)
+      local store = get_store(controller)
+      store.websocket_status = status
+    end
   }, function(message)
-    local event = EisyClient.parse_event(message)
-    if event.control == "_0" then
-      log.debug("eISY WebSocket heartbeat received")
-      return
-    end
-
-    if apply_event_update(driver, controller, event) then
-      return
-    end
-
-    if event.control == "_3" then
-      scan_eisy(driver, controller)
+    local routed = isy_events.route_xml(message)
+    if not apply_event_update(driver, controller, routed) then
+      log.debug("Ignoring eISY WebSocket event " .. tostring(routed.kind))
     end
   end)
   controller:set_field("ws_handle", ws_handle)

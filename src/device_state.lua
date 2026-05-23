@@ -1,4 +1,5 @@
 local capabilities = require "st.capabilities"
+local isy_constants = require "isy_constants"
 
 local state = {}
 local keypad_button_status = capabilities["oftentrust07380.keypadbuttonstatus"]
@@ -104,6 +105,19 @@ local function switch_event(value)
   return value > 0 and capabilities.switch.switch.on() or capabilities.switch.switch.off()
 end
 
+local function battery_percent(prop)
+  local value = optional_number(prop)
+  if not value then return nil end
+  return math.max(0, math.min(100, math.floor(value + 0.5)))
+end
+
+local function emit_optional_battery(device, component, properties)
+  local battery = battery_percent(properties and properties.BATLVL)
+  if battery then
+    emit_event(device, component, capabilities.battery.ID, capabilities.battery.battery(battery))
+  end
+end
+
 local function fan_speed_number(value)
   value = tonumber(value) or 0
   if value <= 0 then return 0 end
@@ -129,6 +143,11 @@ local function thermostat_mode(prop)
   if formatted:find("auto", 1, true) then return "auto" end
 
   local value = tonumber(prop and prop.value)
+  local mapped = isy_constants.THERMOSTAT_MODES[value]
+  if mapped == "program auto" then return "auto" end
+  if mapped == "program heat" then return "heat" end
+  if mapped == "program cool" then return "cool" end
+  if mapped then return mapped end
   if value == 0 then return "off" end
   if value == 1 then return "heat" end
   if value == 2 then return "cool" end
@@ -138,6 +157,9 @@ end
 
 local function thermostat_operating_state(prop)
   local formatted = tostring(prop and prop.formatted or ""):lower()
+  if formatted:find("pending heat", 1, true) then return "pending heat" end
+  if formatted:find("pending cool", 1, true) then return "pending cool" end
+  if formatted:find("vent", 1, true) then return "vent economizer" end
   if formatted:find("heat", 1, true) then return "heating" end
   if formatted:find("cool", 1, true) then return "cooling" end
   if formatted:find("fan", 1, true) then return "fan only" end
@@ -145,6 +167,9 @@ local function thermostat_operating_state(prop)
 
   local value = tonumber(prop and prop.value)
   if not value then return nil end
+  if isy_constants.THERMOSTAT_OPERATING_STATES[value] then
+    return isy_constants.THERMOSTAT_OPERATING_STATES[value]
+  end
   if value == 0 then return "idle" end
   if value == 1 then return "heating" end
   if value == 2 then return "cooling" end
@@ -169,6 +194,9 @@ local function thermostat_fan_mode(prop)
   if formatted:find("auto", 1, true) then return "auto" end
 
   local value = tonumber(prop and prop.value)
+  if isy_constants.THERMOSTAT_FAN_MODES[value] then
+    return isy_constants.THERMOSTAT_FAN_MODES[value]
+  end
   if value == 7 or value == 1 then return "on" end
   if value == 8 or value == 0 then return "auto" end
   return nil
@@ -181,10 +209,13 @@ function state.emit_component(device, component, kind, properties, component_nam
 
   if kind == "motion" then
     emit_event(device, component, capabilities.motionSensor.ID, value > 0 and capabilities.motionSensor.motion.active() or capabilities.motionSensor.motion.inactive())
+    emit_optional_battery(device, component, properties)
   elseif kind == "contact" then
     emit_event(device, component, capabilities.contactSensor.ID, value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
+    emit_optional_battery(device, component, properties)
   elseif kind == "water" then
     emit_event(device, component, capabilities.waterSensor.ID, value > 0 and capabilities.waterSensor.water.wet() or capabilities.waterSensor.water.dry())
+    emit_optional_battery(device, component, properties)
   elseif kind == "thermostat" then
     emit_event(device, component, capabilities.thermostatMode.ID, capabilities.thermostatMode.supportedThermostatModes({ "off", "heat", "cool", "auto" }))
     emit_event(device, component, capabilities.thermostatFanMode.ID, capabilities.thermostatFanMode.supportedThermostatFanModes({ "auto", "on" }))
