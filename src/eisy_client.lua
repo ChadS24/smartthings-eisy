@@ -4,6 +4,7 @@ local log = require "log"
 
 local http = cosock.asyncify "socket.http"
 local ok_https, https = pcall(function() return cosock.asyncify "ssl.https" end)
+local isy_properties = require "isy_properties"
 
 local client = {}
 local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -17,12 +18,6 @@ local EVENT_STATUS_CONTROLS = {
   CLISPC = true,
   CLIHCS = true,
   CLIFS = true
-}
-local EVENT_COMMAND_STATUS_VALUES = {
-  DON = 255,
-  DFON = 255,
-  DOF = 0,
-  DFOF = 0
 }
 
 local function xml_unescape(value)
@@ -64,19 +59,15 @@ local function tag_attrs(block, tag)
 end
 
 local function parse_properties(block)
-  local properties = {}
-  for raw_attrs in tostring(block):gmatch("<property%s+([^>]-)/>") do
-    local attrs = parse_attrs(raw_attrs)
-    if attrs.id then
-      properties[attrs.id] = {
-        id = attrs.id,
-        value = tonumber(attrs.value) or attrs.value,
-        formatted = attrs.formatted,
-        uom = attrs.uom
-      }
-    end
-  end
-  return properties
+  return isy_properties.parse_properties(block)
+end
+
+function client.parse_config(xml)
+  return {
+    uuid = tag_text(xml, "uuid"),
+    model = tag_text(xml, "model"),
+    name = tag_text(xml, "name")
+  }
 end
 
 function client.parse_nodes(xml)
@@ -145,11 +136,7 @@ function client.event_statuses(event)
   local formatted = event.formatted
   local uom = event.uom
 
-  if EVENT_COMMAND_STATUS_VALUES[control] ~= nil then
-    status_id = "ST"
-    value = tonumber(event.action) or EVENT_COMMAND_STATUS_VALUES[control]
-    if value == 0 and not formatted then formatted = "0%" end
-  elseif not EVENT_STATUS_CONTROLS[control] then
+  if not EVENT_STATUS_CONTROLS[control] then
     return nil
   end
 
@@ -166,7 +153,7 @@ function client.event_statuses(event)
 end
 
 function client.event_requires_refresh(event)
-  return event and EVENT_COMMAND_STATUS_VALUES[event.control] ~= nil
+  return false
 end
 
 local function basic_auth(username, password)
@@ -206,6 +193,10 @@ end
 
 function client.encode_node_address(address)
   return url_encode(address)
+end
+
+function client.encode_path_segment(value)
+  return url_encode(value)
 end
 
 function client.normalize_config(opts)
@@ -343,6 +334,12 @@ function client:get_nodes()
   local body, err = self:request("/rest/nodes?members=false")
   if not body then return nil, err end
   return client.parse_nodes(body)
+end
+
+function client:get_config()
+  local body, err = self:request("/rest/config")
+  if not body then return nil, err end
+  return client.parse_config(body)
 end
 
 function client:get_all_status()

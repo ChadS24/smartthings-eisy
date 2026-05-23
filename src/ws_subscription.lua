@@ -104,7 +104,6 @@ local function route_message(sock, frame, on_message)
     local hbwait = tonumber(event.action) or WS_HEARTBEAT
     sock:settimeout(hbwait + WS_HEARTBEAT_GRACE)
     log.debug("eISY WebSocket heartbeat received")
-    return
   end
   on_message(frame)
 end
@@ -150,14 +149,22 @@ function ws.start(driver, controller_device, opts, on_message)
           log.info("Connected to eISY WebSocket subscription")
           retries = 0
           connected = true
+          if opts.on_status then opts.on_status("syncing") end
           sock:settimeout(WS_HEARTBEAT + WS_HEARTBEAT_GRACE)
           local fragment_parts
+          local sync_started = os.time()
+          local live = false
           while not cancelled do
             local frame, frame_err, opcode, fin = read_frame(sock)
             if not frame then
               log.info("eISY WebSocket subscription closed; reconnecting without polling fallback: " .. tostring(frame_err))
               connected = false
+              if opts.on_status then opts.on_status("lost_stream_connection") end
               break
+            end
+            if not live and os.time() - sync_started >= 1 then
+              live = true
+              if opts.on_status then opts.on_status("connected") end
             end
             if opcode == 1 or opcode == 2 then
               if fin then
@@ -186,6 +193,7 @@ function ws.start(driver, controller_device, opts, on_message)
               pcall(function() send_frame(sock, 8, frame) end)
               log.info("eISY WebSocket subscription closed by eISY; reconnecting without polling fallback")
               connected = false
+              if opts.on_status then opts.on_status("lost_stream_connection") end
               break
             elseif opcode == 9 then
               local _, pong_err = send_frame(sock, 10, frame)
@@ -198,6 +206,7 @@ function ws.start(driver, controller_device, opts, on_message)
           end
         else
           connected = false
+          if opts.on_status then opts.on_status("disconnected") end
           log.info(string.format(
             "eISY WebSocket subscription unavailable at %s:%s; retrying without polling fallback: %s",
             tostring(opts.host),
@@ -207,12 +216,14 @@ function ws.start(driver, controller_device, opts, on_message)
         end
       else
         connected = false
+        if opts.on_status then opts.on_status("disconnected") end
         log.warn("eISY WebSocket connection failed: " .. tostring(err))
       end
       pcall(function() sock:close() end)
       connected = false
       local delay = retry_delay(retries)
       retries = next_retry(retries)
+      if opts.on_status then opts.on_status("reconnecting") end
       log.info("Attempting eISY WebSocket reconnect in " .. tostring(delay) .. "s")
       cosock.socket.sleep(delay)
     end
