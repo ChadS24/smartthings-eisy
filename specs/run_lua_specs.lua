@@ -181,6 +181,7 @@ function assert_truthy(value, message)
 end
 
 require "pyisy_alignment_spec"
+require "review_fixes_spec"
 
 if failures > 0 then
   error(tostring(failures) .. " spec(s) failed")

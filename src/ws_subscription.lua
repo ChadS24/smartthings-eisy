@@ -8,6 +8,9 @@ local WS_HEARTBEAT = 30
 local WS_HEARTBEAT_GRACE = 2
 local WS_RETRY_BACKOFF = { 0.01, 1, 10, 30, 60 }
 local WS_MAX_RETRIES = 4
+-- A connection must stay up this long before the reconnect backoff resets, so an
+-- eISY that accepts the upgrade and immediately drops it cannot cause a tight loop.
+local WS_STABLE_SECONDS = 60
 
 local function mask_payload(payload, mask)
   local out = {}
@@ -124,11 +127,15 @@ function ws.start(driver, controller_device, opts, on_message)
 
   local cancelled = false
   local connected = false
-  local thread = controller_device.thread:call_with_delay(1, function()
+  -- Run on a dedicated cosock coroutine. The loop never returns, so running it as a
+  -- device thread callback would block every event queued on that thread.
+  cosock.spawn(function()
+    cosock.socket.sleep(1)
     math.randomseed(os.time())
     local retries = 0
     while not cancelled do
       local sock = cosock.socket.tcp()
+      local connected_at
       sock:settimeout(10)
       local ok, err = sock:connect(opts.host, tonumber(opts.port) or 80)
       if ok then
@@ -147,7 +154,7 @@ function ws.start(driver, controller_device, opts, on_message)
         local response, header_err = read_http_headers(sock)
         if is_switching_protocols(response) then
           log.info("Connected to eISY WebSocket subscription")
-          retries = 0
+          connected_at = os.time()
           connected = true
           if opts.on_status then opts.on_status("syncing") end
           sock:settimeout(WS_HEARTBEAT + WS_HEARTBEAT_GRACE)
@@ -156,6 +163,7 @@ function ws.start(driver, controller_device, opts, on_message)
           local live = false
           while not cancelled do
             local frame, frame_err, opcode, fin = read_frame(sock)
+            if cancelled then break end
             if not frame then
               log.info("eISY WebSocket subscription closed; reconnecting without polling fallback: " .. tostring(frame_err))
               connected = false
@@ -221,22 +229,29 @@ function ws.start(driver, controller_device, opts, on_message)
       end
       pcall(function() sock:close() end)
       connected = false
+      if cancelled then break end
+      if connected_at and os.time() - connected_at >= WS_STABLE_SECONDS then
+        retries = 0
+      end
       local delay = retry_delay(retries)
       retries = next_retry(retries)
       if opts.on_status then opts.on_status("reconnecting") end
       log.info("Attempting eISY WebSocket reconnect in " .. tostring(delay) .. "s")
       cosock.socket.sleep(delay)
     end
+    log.info("eISY WebSocket subscription stopped")
   end, "eisy websocket subscription")
 
   return {
     is_connected = function()
       return connected
     end,
+    -- The socket is not closed here: the loop may be blocked on it in another
+    -- coroutine. The loop stops routing frames immediately and closes the socket
+    -- itself once its pending read returns.
     cancel = function()
       cancelled = true
       connected = false
-      if thread and thread.cancel then thread:cancel() end
     end
   }
 end

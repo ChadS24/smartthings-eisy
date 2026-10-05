@@ -78,13 +78,52 @@ local function optional_number(prop)
   return tonumber(formatted)
 end
 
+local UOM_CELSIUS = "4"
+local UOM_FAHRENHEIT = "17"
+local UOM_HALF_DEGREES = "101"
+-- SmartThings thermostat drivers treat setpoint arguments at or above this value as
+-- Fahrenheit and anything below it as Celsius.
+local FAHRENHEIT_SETPOINT_THRESHOLD = 40
+
+local function precision_digits(prop)
+  local prec = tonumber(prop and prop.precision)
+  if prec and prec > 0 then return math.floor(prec) end
+  return 0
+end
+
 local function thermostat_temperature(prop)
-  local value = optional_number(prop)
-  if not value then return nil end
-  if tostring(prop.uom or "") == "101" or value > 130 then
+  local raw = tonumber(prop and prop.value)
+  if not raw then
+    -- The formatted text is already in display units.
+    return optional_number(prop)
+  end
+  local value = raw / (10 ^ precision_digits(prop))
+  local uom = tostring(prop.uom or "")
+  if uom == UOM_HALF_DEGREES or (uom == "" and value > 130) then
     value = value / 2
   end
   return value
+end
+
+local function temperature_unit_of(prop)
+  if not prop then return nil end
+  local uom = tostring(prop.uom or "")
+  if uom == UOM_CELSIUS then return "C" end
+  if uom == UOM_FAHRENHEIT then return "F" end
+  local formatted = tostring(prop.formatted or "")
+  if formatted:match("C%s*$") then return "C" end
+  if formatted:match("F%s*$") then return "F" end
+  return nil
+end
+
+--- The temperature scale a thermostat reports in, from the first of its temperature
+--- properties that identifies one. Defaults to Fahrenheit.
+function state.thermostat_unit(...)
+  for index = 1, select("#", ...) do
+    local unit = temperature_unit_of(select(index, ...))
+    if unit then return unit end
+  end
+  return "F"
 end
 
 local function percent_from_property(prop)
@@ -214,21 +253,25 @@ function state.emit_component(device, component, kind, properties, component_nam
     emit_event(device, component, capabilities.contactSensor.ID, value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
     emit_optional_battery(device, component, properties)
   elseif kind == "water" then
-    emit_event(device, component, capabilities.waterSensor.ID, value > 0 and capabilities.waterSensor.water.wet() or capabilities.waterSensor.water.dry())
+    -- No ST means the state is unknown; keep the last reported state.
+    if st then
+      emit_event(device, component, capabilities.waterSensor.ID, value > 0 and capabilities.waterSensor.water.wet() or capabilities.waterSensor.water.dry())
+    end
     emit_optional_battery(device, component, properties)
   elseif kind == "thermostat" then
     emit_event(device, component, capabilities.thermostatMode.ID, capabilities.thermostatMode.supportedThermostatModes({ "off", "heat", "cool", "auto" }))
     emit_event(device, component, capabilities.thermostatFanMode.ID, capabilities.thermostatFanMode.supportedThermostatFanModes({ "auto", "on" }))
 
+    local unit = state.thermostat_unit(st, properties and properties.CLISPH, properties and properties.CLISPC)
     local temp = thermostat_temperature(st)
     temp = temp or latest_number(device, component, capabilities.temperatureMeasurement, "temperatureMeasurement", "temperature")
-    if temp then emit_event(device, component, capabilities.temperatureMeasurement.ID, capabilities.temperatureMeasurement.temperature({ value = temp, unit = "F" })) end
+    if temp then emit_event(device, component, capabilities.temperatureMeasurement.ID, capabilities.temperatureMeasurement.temperature({ value = temp, unit = unit })) end
     local heat = thermostat_temperature(properties and properties.CLISPH)
     heat = heat or latest_number(device, component, capabilities.thermostatHeatingSetpoint, "thermostatHeatingSetpoint", "heatingSetpoint")
-    if heat then emit_event(device, component, capabilities.thermostatHeatingSetpoint.ID, capabilities.thermostatHeatingSetpoint.heatingSetpoint({ value = heat, unit = "F" })) end
+    if heat then emit_event(device, component, capabilities.thermostatHeatingSetpoint.ID, capabilities.thermostatHeatingSetpoint.heatingSetpoint({ value = heat, unit = unit })) end
     local cool = thermostat_temperature(properties and properties.CLISPC)
     cool = cool or latest_number(device, component, capabilities.thermostatCoolingSetpoint, "thermostatCoolingSetpoint", "coolingSetpoint")
-    if cool then emit_event(device, component, capabilities.thermostatCoolingSetpoint.ID, capabilities.thermostatCoolingSetpoint.coolingSetpoint({ value = cool, unit = "F" })) end
+    if cool then emit_event(device, component, capabilities.thermostatCoolingSetpoint.ID, capabilities.thermostatCoolingSetpoint.coolingSetpoint({ value = cool, unit = unit })) end
     local mode = thermostat_mode(properties and properties.CLIMD)
     mode = mode or latest_string(device, component, capabilities.thermostatMode, "thermostatMode", "thermostatMode")
     if mode then emit_event(device, component, capabilities.thermostatMode.ID, capabilities.thermostatMode.thermostatMode(mode)) end
@@ -252,6 +295,52 @@ function state.emit_component(device, component, kind, properties, component_nam
   else
     emit_event(device, component, capabilities.switch.ID, switch_event(value))
   end
+end
+
+--- Leak state implied by a command event from one of a leak sensor's nodes.
+---
+--- The Dry node sends DON when the sensor dries out (and DOF when it gets wet, on
+--- some configurations); the Wet node sends DON when a leak is detected.
+---
+--- @param role string "dry" or "wet"
+--- @param control string the event's control, e.g. "DON"
+--- @return string|nil "wet", "dry", or nil when the event says nothing about the state
+function state.leak_state_from_control(role, control)
+  if role == "dry" then
+    if control == "DON" then return "dry" end
+    if control == "DOF" then return "wet" end
+  elseif role == "wet" then
+    if control == "DON" then return "wet" end
+  end
+  return nil
+end
+
+--- Leak state implied by the Dry and Wet nodes' ST values.
+---
+--- Only usable before any command event has been seen: both nodes can be On at
+--- the same time, so equal values are ambiguous and return nil.
+function state.leak_state_from_status(dry_properties, wet_properties)
+  local dry_value = dry_properties and dry_properties.ST and tonumber(dry_properties.ST.value)
+  if dry_value == nil then return nil end
+  local dry_on = dry_value > 0
+  local wet_value = wet_properties and wet_properties.ST and tonumber(wet_properties.ST.value)
+  if wet_value ~= nil and (wet_value > 0) == dry_on then return nil end
+  return dry_on and "dry" or "wet"
+end
+
+--- Properties for a leak sensor's main component, with ST replaced by the
+--- resolved leak state (removed when the state is unknown).
+function state.leak_properties(dry_properties, leak_state)
+  local properties = {}
+  for id, prop in pairs(dry_properties or {}) do properties[id] = prop end
+  if leak_state == "wet" then
+    properties.ST = { id = "ST", value = 1 }
+  elseif leak_state == "dry" then
+    properties.ST = { id = "ST", value = 0 }
+  else
+    properties.ST = nil
+  end
+  return properties
 end
 
 function state.emit_device(driver, device, eisy_device, statuses)
@@ -292,13 +381,34 @@ function state.fan_speed_to_insteon(speed)
   return 255
 end
 
-function state.thermostat_setpoint_to_insteon(value)
+--- Encode a SmartThings setpoint for an eISY setpoint command.
+---
+--- @param value number|table the SmartThings setpoint argument
+--- @param setpoint_prop table|nil the cached CLISPH/CLISPC property (uom, precision)
+--- @param status_prop table|nil the cached ST property, used when the setpoint lacks a scale
+--- @return number|nil the value to send, in the setpoint property's encoding
+function state.thermostat_setpoint_to_insteon(value, setpoint_prop, status_prop)
   local numeric = tonumber(type(value) == "table" and value.value or value)
   if not numeric then return nil end
-  if numeric <= 45 then
+
+  local command_unit = numeric >= FAHRENHEIT_SETPOINT_THRESHOLD and "F" or "C"
+  local device_unit = state.thermostat_unit(setpoint_prop, status_prop)
+  if command_unit == "C" and device_unit == "F" then
     numeric = (numeric * 9 / 5) + 32
+  elseif command_unit == "F" and device_unit == "C" then
+    numeric = (numeric - 32) * 5 / 9
   end
-  return math.floor((numeric * 2) + 0.5)
+
+  local encoding = setpoint_prop or status_prop
+  local uom = tostring(encoding and encoding.uom or "")
+  if uom == UOM_HALF_DEGREES or uom == "" then
+    -- Insteon thermostats report and accept setpoints in half degrees. With no
+    -- cached uom, keep the historical half-degree encoding.
+    numeric = numeric * 2
+  else
+    numeric = numeric * (10 ^ precision_digits(encoding))
+  end
+  return math.floor(numeric + 0.5)
 end
 
 return state

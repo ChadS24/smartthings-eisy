@@ -69,8 +69,12 @@ local STATELESS_NODE_DEFS = {
   remotelinc2_adv = true
 }
 
+local LEAK_SENSOR_TYPE = "16.8"
+local LEAK_DRY_GROUP = 1
+local LEAK_WET_GROUP = 2
+
 local WATER_SENSOR_TYPES = {
-  ["16.8"] = true
+  [LEAK_SENSOR_TYPE] = true
 }
 
 local MOTION_SENSOR_TYPES = {
@@ -309,6 +313,20 @@ local function wet_node(group)
   return group[1]
 end
 
+-- Insteon leak sensors expose a "Dry" node (group 1, On when dry) and a "Wet"
+-- node (group 2, On when wet). IoX does not clear one when the other turns on.
+local function leak_nodes(group)
+  local dry, wet
+  for _, node in ipairs(group) do
+    if type_key(node) == LEAK_SENSOR_TYPE then
+      local node_group = address_group(node.address)
+      if node_group == LEAK_DRY_GROUP and not dry then dry = node end
+      if node_group == LEAK_WET_GROUP and not wet then wet = node end
+    end
+  end
+  return dry, wet
+end
+
 local function group_has(group, predicate)
   for _, node in ipairs(group) do
     if predicate(node) then return true end
@@ -386,14 +404,23 @@ function classifier.classify_all(nodes, ignored_patterns)
     end)
 
     if group_has(group, is_water_node) then
-      local wet = wet_node(group)
+      local dry, wet = leak_nodes(group)
+      local leak
+      local main
+      if dry then
+        main = dry
+        leak = { dry = dry.address, wet = wet and wet.address }
+      else
+        main = wet_node(group)
+      end
       devices[#devices + 1] = {
         key = key,
         kind = "water",
         profile = profile_with_battery("eisy-water", "water", group),
-        label = group[1].name or wet.name or key,
-        primary = wet.address,
-        components = { main = wet.address },
+        label = group[1].name or main.name or key,
+        primary = main.address,
+        components = { main = main.address },
+        leak = leak,
         nodes = group
       }
     elseif is_fanlinc_group(group) then
