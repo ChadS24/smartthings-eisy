@@ -10,6 +10,7 @@ local child_identity = require "child_identity"
 local isy_constants = require "isy_constants"
 local isy_events = require "isy_events"
 local isy_model = require "isy_model"
+local isy_scene = require "isy_scene"
 
 local CONTROLLER_DNI = "eisy-controller"
 local PERSISTED_UUID_FIELD = "eisy_controller_uuid"
@@ -30,7 +31,8 @@ local function controller_opts(device)
     port = normalized.port,
     username = device.preferences.eisyUsername,
     password = device.preferences.eisyPassword,
-    ignored_nodes = device.preferences.ignoredNodes or ""
+    ignored_nodes = device.preferences.ignoredNodes or "",
+    scene_ids = device.preferences.sceneIds or ""
   }
 end
 
@@ -111,7 +113,15 @@ local function node_statuses(store, addresses)
   return statuses
 end
 
-local function component_addresses(eisy_device)
+local function scene_node_lookup(store)
+  return function(address) return store:get_node(address) end
+end
+
+local function component_addresses(eisy_device, store)
+  -- A scene has no status of its own; its members' statuses decide it.
+  if eisy_device and eisy_device.scene then
+    return isy_scene.status_addresses(eisy_device.scene.members, scene_node_lookup(store), classifier.has_scene_status)
+  end
   local addresses = {}
   local seen = {}
   local function add(address)
@@ -140,7 +150,11 @@ end
 -- implied by a command event, else whatever the node statuses unambiguously imply.
 local function device_statuses(controller, eisy_device)
   local store = get_store(controller)
-  local statuses = node_statuses(store, component_addresses(eisy_device))
+  if eisy_device and eisy_device.scene then
+    local status = isy_scene.status(eisy_device.scene.members, scene_node_lookup(store), classifier.has_scene_status)
+    return { [eisy_device.primary] = { ST = status } }
+  end
+  local statuses = node_statuses(store, component_addresses(eisy_device, store))
   local leak = eisy_device and eisy_device.leak
   if leak and leak.dry then
     local leak_state = leak_states(controller)[eisy_device.key]
@@ -169,6 +183,18 @@ local function emit_mapped_component(controller, child, mapped)
   )
 end
 
+-- Re-emit every configured scene that the node at `address` is a member of.
+local function emit_member_scenes(driver, controller, address)
+  local scenes_by_member = controller:get_field("eisy_scenes_by_member") or {}
+  local by_key = controller:get_field("eisy_devices_by_key") or {}
+  for _, key in ipairs(scenes_by_member[address] or {}) do
+    local eisy_device = by_key[key]
+    if eisy_device then
+      emit_child_state(driver, find_child_by_key(driver, key), eisy_device, device_statuses(controller, eisy_device))
+    end
+  end
+end
+
 local function refresh_child(driver, controller, child)
   local by_key = controller:get_field("eisy_devices_by_key") or {}
   local key = device_child_key(child)
@@ -179,7 +205,7 @@ local function refresh_child(driver, controller, child)
   end
   local client = client_for(controller)
   local store = get_store(controller)
-  for _, address in ipairs(component_addresses(eisy_device)) do
+  for _, address in ipairs(component_addresses(eisy_device, store)) do
     local status, err = client:get_node_status(address)
     if status then
       store:update_status(address, status)
@@ -212,7 +238,35 @@ local function schedule_node_refresh(driver, controller, address, delay)
     local store = get_store(controller)
     store:update_status(address, status)
     emit_mapped_component(controller, find_child_by_key(driver, mapped.child_key), mapped)
+    emit_member_scenes(driver, controller, address)
   end, "eisy debounced node refresh")
+end
+
+-- After a scene command the eISY reports each member's new status over the
+-- WebSocket. Without a live WebSocket, read the members' statuses instead.
+local function schedule_scene_refresh(driver, controller, key, delay)
+  local pending = controller:get_field("pending_scene_refreshes") or {}
+  if pending[key] then return end
+  controller:set_field("pending_scene_refreshes", pending)
+
+  pending[key] = controller.thread:call_with_delay(delay or 2, function()
+    pending[key] = nil
+    local eisy_device = (controller:get_field("eisy_devices_by_key") or {})[key]
+    if not eisy_device then return end
+    local store = get_store(controller)
+    if store.websocket_status ~= "connected" then
+      local client = client_for(controller)
+      for _, address in ipairs(component_addresses(eisy_device, store)) do
+        local status, err = client:get_node_status(address)
+        if status then
+          store:update_status(address, status)
+        else
+          log.warn("Unable to refresh eISY scene member " .. tostring(address) .. ": " .. tostring(err))
+        end
+      end
+    end
+    emit_child_state(driver, find_child_by_key(driver, key), eisy_device, device_statuses(controller, eisy_device))
+  end, "eisy scene refresh")
 end
 
 local function schedule_scan(driver, controller, delay)
@@ -256,13 +310,19 @@ local function apply_event_update(driver, controller, routed)
   if not routed.address then return false end
   local by_address = controller:get_field("eisy_devices_by_address") or {}
   local mapped = by_address[routed.address]
-  if not mapped then return true end
+  local scenes_by_member = controller:get_field("eisy_scenes_by_member") or {}
+  local scene_member = scenes_by_member[routed.address] ~= nil
+  if not mapped and not scene_member then return true end
 
   if routed.kind == "status" and routed.property then
     store:update_status(routed.address, { [routed.property.id] = routed.property })
-    emit_mapped_component(controller, find_child_by_key(driver, mapped.child_key), mapped)
+    if mapped then emit_mapped_component(controller, find_child_by_key(driver, mapped.child_key), mapped) end
+    if scene_member then emit_member_scenes(driver, controller, routed.address) end
     return true
   end
+
+  -- A scene member with no device of its own only matters for its status.
+  if not mapped then return true end
 
   if routed.kind == "control" and routed.property then
     local leak_state = mapped.leak_role and device_state.leak_state_from_control(mapped.leak_role, routed.property.id)
@@ -318,24 +378,7 @@ scan_eisy = function(driver, controller)
   end
   store:replace_nodes(nodes)
 
-  local eisy_devices = classifier.classify_all(store:as_node_list(), opts.ignored_nodes)
-  local by_key = {}
-  local by_address = {}
-  for _, eisy_device in ipairs(eisy_devices) do
-    local key = child_key(driver, controller, eisy_device)
-    eisy_device.child_key = key
-    by_key[key] = eisy_device
-    for component, address in pairs(eisy_device.components or {}) do
-      by_address[address] = { child_key = key, component = component, address = address, device = eisy_device }
-    end
-    local leak = eisy_device.leak
-    if leak then
-      by_address[leak.dry].leak_role = "dry"
-      if leak.wet then
-        by_address[leak.wet] = { child_key = key, component = "main", address = leak.wet, device = eisy_device, leak_role = "wet" }
-      end
-    end
-
+  local function upsert_child(eisy_device, key)
     local child = find_child_by_key(driver, key)
     if not child then
       log.info("Creating eISY child device " .. eisy_device.label .. " as " .. eisy_device.profile)
@@ -365,8 +408,59 @@ scan_eisy = function(driver, controller)
     end
   end
 
+  local eisy_devices = classifier.classify_all(store:as_node_list(), opts.ignored_nodes)
+  local by_key = {}
+  local by_address = {}
+  for _, eisy_device in ipairs(eisy_devices) do
+    local key = child_key(driver, controller, eisy_device)
+    eisy_device.child_key = key
+    by_key[key] = eisy_device
+    for component, address in pairs(eisy_device.components or {}) do
+      by_address[address] = { child_key = key, component = component, address = address, device = eisy_device }
+    end
+    local leak = eisy_device.leak
+    if leak then
+      by_address[leak.dry].leak_role = "dry"
+      if leak.wet then
+        by_address[leak.wet] = { child_key = key, component = "main", address = leak.wet, device = eisy_device, leak_role = "wet" }
+      end
+    end
+
+    upsert_child(eisy_device, key)
+  end
+
+  -- Scenes are opted into by id. Keep the last known definition of a scene the
+  -- eISY could not return this time so its child keeps working.
+  local previous_by_key = controller:get_field("eisy_devices_by_key") or {}
+  local scenes_by_member = {}
+  for _, scene_id in ipairs(isy_scene.parse_ids(opts.scene_ids)) do
+    local eisy_device
+    local parsed, scene_err = client:get_scene(scene_id)
+    if parsed then
+      eisy_device = isy_scene.device(parsed)
+    else
+      log.warn("Unable to fetch eISY scene " .. tostring(scene_id) .. ": " .. tostring(scene_err))
+      for _, previous in pairs(previous_by_key) do
+        if previous.scene and previous.primary == scene_id then eisy_device = previous end
+      end
+    end
+
+    if eisy_device then
+      local key = child_key(driver, controller, eisy_device)
+      eisy_device.child_key = key
+      by_key[key] = eisy_device
+      for _, member in ipairs(eisy_device.scene.members) do
+        local keys = scenes_by_member[member.address] or {}
+        keys[#keys + 1] = key
+        scenes_by_member[member.address] = keys
+      end
+      upsert_child(eisy_device, key)
+    end
+  end
+
   controller:set_field("eisy_devices_by_key", by_key)
   controller:set_field("eisy_devices_by_address", by_address)
+  controller:set_field("eisy_scenes_by_member", scenes_by_member)
 
   local statuses, status_err = client:get_all_status()
   if statuses then
@@ -392,14 +486,16 @@ end
 
 local function stop_controller_threads(controller)
   cancel_controller_timer(controller, controller:get_field("pending_scan"))
-  local pending = controller:get_field("pending_node_refreshes") or {}
-  for _, timer in pairs(pending) do
-    cancel_controller_timer(controller, timer)
+  for _, field in ipairs({ "pending_node_refreshes", "pending_scene_refreshes" }) do
+    for _, timer in pairs(controller:get_field(field) or {}) do
+      cancel_controller_timer(controller, timer)
+    end
   end
   local ws_handle = controller:get_field("ws_handle")
   if ws_handle and ws_handle.cancel then ws_handle.cancel() end
   controller:set_field("pending_scan", nil)
   controller:set_field("pending_node_refreshes", nil)
+  controller:set_field("pending_scene_refreshes", nil)
   controller:set_field("ws_handle", nil)
 end
 
@@ -479,6 +575,8 @@ local function info_changed_handler(driver, device, _, args)
       or old.eisyPassword ~= prefs.eisyPassword
       or old.ignoredNodes ~= prefs.ignoredNodes then
     start_controller_threads(driver, device)
+  elseif tostring(old.sceneIds or "") ~= tostring(prefs.sceneIds or "") then
+    scan_eisy(driver, device)
   end
 end
 
@@ -584,7 +682,11 @@ local function send_command_and_refresh(driver, device, command, params)
     log.warn("eISY command failed: " .. tostring(err))
     return
   end
-  refresh_child(driver, controller, device)
+  if eisy_device.scene then
+    schedule_scene_refresh(driver, controller, device_child_key(device), 2)
+  else
+    refresh_child(driver, controller, device)
+  end
 end
 
 local function switch_on(driver, device, command)

@@ -182,6 +182,7 @@ end
 
 require "pyisy_alignment_spec"
 require "review_fixes_spec"
+require "scene_spec"
 
 if failures > 0 then
   error(tostring(failures) .. " spec(s) failed")
