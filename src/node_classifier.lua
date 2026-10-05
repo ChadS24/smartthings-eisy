@@ -377,6 +377,13 @@ local function is_iolinc_group(group)
       and (group_has(group, function(node) return type_major(node) == "7" end) or #group == 2)
 end
 
+-- Whether a node's ST says if it is lit, and so counts toward its scenes' status.
+-- Sensors and stateless controllers (remotes, motion sensors) can be scene
+-- controllers but their status is not a light level.
+function classifier.has_scene_status(node)
+  return not (is_stateless_node(node) or is_water_node(node) or is_motion_node(node) or is_contact_node(node))
+end
+
 function classifier.classify_all(nodes, ignored_patterns)
   local patterns = type(ignored_patterns) == "table" and ignored_patterns or split_patterns(ignored_patterns)
   local grouped = {}

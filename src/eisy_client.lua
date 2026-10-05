@@ -5,6 +5,7 @@ local log = require "log"
 local http = cosock.asyncify "socket.http"
 local ok_https, https = pcall(function() return cosock.asyncify "ssl.https" end)
 local isy_properties = require "isy_properties"
+local isy_scene = require "isy_scene"
 
 local client = {}
 local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -342,6 +343,12 @@ function client:get_nodes()
   local body, err = self:request("/rest/nodes?members=false")
   if not body then return nil, err end
   return client.parse_nodes(body)
+end
+
+function client:get_scene(id)
+  local body, err = self:request("/rest/nodes/" .. client.encode_node_address(id) .. "?members=true")
+  if not body then return nil, err end
+  return isy_scene.parse(body, id)
 end
 
 function client:get_config()

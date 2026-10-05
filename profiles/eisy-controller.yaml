@@ -60,3 +60,11 @@ preferences:
     definition:
       stringType: text
       default: ""
+  - name: sceneIds
+    title: Scene IDs
+    description: Comma-separated eISY scene IDs to add as switches, e.g. 12345, 23456. The ID is the scene's address in the eISY Admin Console.
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      default: ""
