@@ -12,6 +12,7 @@ local isy_events = require "isy_events"
 local isy_model = require "isy_model"
 
 local CONTROLLER_DNI = "eisy-controller"
+local PERSISTED_UUID_FIELD = "eisy_controller_uuid"
 local scan_capability = capabilities["oftentrust07380.scanfordevices"]
 local handle_child_info_changed
 local scan_eisy
@@ -113,17 +114,49 @@ end
 local function component_addresses(eisy_device)
   local addresses = {}
   local seen = {}
-  for _, address in pairs(eisy_device and eisy_device.components or {}) do
+  local function add(address)
     if address and not seen[address] then
       seen[address] = true
       addresses[#addresses + 1] = address
     end
   end
+  for _, address in pairs(eisy_device and eisy_device.components or {}) do add(address) end
+  -- A leak sensor's Wet node is not a component but feeds its state.
+  if eisy_device and eisy_device.leak then add(eisy_device.leak.wet) end
   return addresses
 end
 
-local function emit_mapped_component(child, mapped, store)
+local function leak_states(controller)
+  local states = controller:get_field("leak_states")
+  if not states then
+    states = {}
+    controller:set_field("leak_states", states)
+  end
+  return states
+end
+
+-- Statuses for every node of an eISY device, keyed by address. For a leak sensor
+-- the main (Dry) node's ST is replaced by the resolved leak state: the last state
+-- implied by a command event, else whatever the node statuses unambiguously imply.
+local function device_statuses(controller, eisy_device)
+  local store = get_store(controller)
+  local statuses = node_statuses(store, component_addresses(eisy_device))
+  local leak = eisy_device and eisy_device.leak
+  if leak and leak.dry then
+    local leak_state = leak_states(controller)[eisy_device.key]
+        or device_state.leak_state_from_status(statuses[leak.dry], leak.wet and statuses[leak.wet])
+    statuses[leak.dry] = device_state.leak_properties(statuses[leak.dry], leak_state)
+  end
+  return statuses
+end
+
+local function emit_mapped_component(controller, child, mapped)
   if not child or not mapped or not mapped.device or not mapped.address then return end
+  if mapped.device.leak then
+    emit_child_state(nil, child, mapped.device, device_statuses(controller, mapped.device))
+    return
+  end
+  local store = get_store(controller)
   local node = store:get_node(mapped.address)
   if not node then return end
   local eisy_device = mapped.device
@@ -154,7 +187,7 @@ local function refresh_child(driver, controller, child)
       log.warn("Unable to refresh eISY node " .. tostring(address) .. ": " .. tostring(err))
     end
   end
-  emit_child_state(driver, child, eisy_device, node_statuses(store, component_addresses(eisy_device)))
+  emit_child_state(driver, child, eisy_device, device_statuses(controller, eisy_device))
 end
 
 local function schedule_node_refresh(driver, controller, address, delay)
@@ -178,7 +211,7 @@ local function schedule_node_refresh(driver, controller, address, delay)
 
     local store = get_store(controller)
     store:update_status(address, status)
-    emit_mapped_component(find_child_by_key(driver, mapped.child_key), mapped, store)
+    emit_mapped_component(controller, find_child_by_key(driver, mapped.child_key), mapped)
   end, "eisy debounced node refresh")
 end
 
@@ -227,11 +260,16 @@ local function apply_event_update(driver, controller, routed)
 
   if routed.kind == "status" and routed.property then
     store:update_status(routed.address, { [routed.property.id] = routed.property })
-    emit_mapped_component(find_child_by_key(driver, mapped.child_key), mapped, store)
+    emit_mapped_component(controller, find_child_by_key(driver, mapped.child_key), mapped)
     return true
   end
 
   if routed.kind == "control" and routed.property then
+    local leak_state = mapped.leak_role and device_state.leak_state_from_control(mapped.leak_role, routed.property.id)
+    if leak_state then
+      leak_states(controller)[mapped.device.key] = leak_state
+      emit_mapped_component(controller, find_child_by_key(driver, mapped.child_key), mapped)
+    end
     if not isy_constants.EVENT_PROPS_IGNORED[routed.property.id] then
       local node = store:get_node(routed.address)
       if node then node:update_property(routed.property) end
@@ -253,12 +291,24 @@ scan_eisy = function(driver, controller)
   local client = client_for(controller)
   local store = get_store(controller)
   local config, config_err = client:get_config()
+  store.uuid = nil
   if config then
     store.uuid = config.uuid
     store.model = config.model
     store.name = config.name
   elseif config_err then
     log.warn("Unable to fetch eISY config; continuing with node discovery: " .. tostring(config_err))
+  end
+  -- Child keys embed the controller uuid, so remember it across restarts. Otherwise
+  -- one failed /rest/config call on a cold start would switch every child to its
+  -- legacy key and create a duplicate of each device.
+  if store.uuid then
+    controller:set_field(PERSISTED_UUID_FIELD, { host = opts.host, uuid = store.uuid }, { persist = true })
+  else
+    local persisted = controller:get_field(PERSISTED_UUID_FIELD)
+    if type(persisted) == "table" and persisted.host == opts.host and persisted.uuid then
+      store.uuid = persisted.uuid
+    end
   end
 
   local nodes, nodes_err = client:get_nodes()
@@ -277,6 +327,13 @@ scan_eisy = function(driver, controller)
     by_key[key] = eisy_device
     for component, address in pairs(eisy_device.components or {}) do
       by_address[address] = { child_key = key, component = component, address = address, device = eisy_device }
+    end
+    local leak = eisy_device.leak
+    if leak then
+      by_address[leak.dry].leak_role = "dry"
+      if leak.wet then
+        by_address[leak.wet] = { child_key = key, component = "main", address = leak.wet, device = eisy_device, leak_role = "wet" }
+      end
     end
 
     local child = find_child_by_key(driver, key)
@@ -317,25 +374,30 @@ scan_eisy = function(driver, controller)
       store:update_status(address, properties)
     end
     for key, eisy_device in pairs(by_key) do
-      emit_child_state(driver, find_child_by_key(driver, key), eisy_device, node_statuses(store, component_addresses(eisy_device)))
+      emit_child_state(driver, find_child_by_key(driver, key), eisy_device, device_statuses(controller, eisy_device))
     end
   else
     log.warn("Unable to fetch eISY status: " .. tostring(status_err))
   end
 end
 
+local function cancel_controller_timer(controller, timer)
+  if not timer then return end
+  if controller.thread and controller.thread.cancel_timer then
+    controller.thread:cancel_timer(timer)
+  elseif timer.cancel then
+    timer:cancel()
+  end
+end
+
 local function stop_controller_threads(controller)
-  local poll_timer = controller:get_field("poll_timer")
-  if poll_timer and poll_timer.cancel then poll_timer:cancel() end
-  local pending_scan = controller:get_field("pending_scan")
-  if pending_scan and pending_scan.cancel then pending_scan:cancel() end
+  cancel_controller_timer(controller, controller:get_field("pending_scan"))
   local pending = controller:get_field("pending_node_refreshes") or {}
   for _, timer in pairs(pending) do
-    if timer and timer.cancel then timer:cancel() end
+    cancel_controller_timer(controller, timer)
   end
   local ws_handle = controller:get_field("ws_handle")
   if ws_handle and ws_handle.cancel then ws_handle.cancel() end
-  controller:set_field("poll_timer", nil)
   controller:set_field("pending_scan", nil)
   controller:set_field("pending_node_refreshes", nil)
   controller:set_field("ws_handle", nil)
@@ -427,13 +489,21 @@ local function command_address(controller, device, component)
   return (eisy_device.components or {})[component or "main"], eisy_device
 end
 
-local function cached_property_uom(eisy_device, address, property_id)
-  for _, node in ipairs(eisy_device and eisy_device.nodes or {}) do
-    if node.address == address then
-      local prop = node.properties and node.properties[property_id]
-      if prop and prop.uom and tostring(prop.uom) ~= "" then return prop.uom end
+local function cached_property(controller, eisy_device, address, property_id)
+  local node = get_store(controller):get_node(address)
+  local prop = node and node.properties and node.properties[property_id]
+  if prop then return prop end
+  for _, scanned in ipairs(eisy_device and eisy_device.nodes or {}) do
+    if scanned.address == address then
+      return scanned.properties and scanned.properties[property_id]
     end
   end
+  return nil
+end
+
+local function cached_property_uom(controller, eisy_device, address, property_id)
+  local prop = cached_property(controller, eisy_device, address, property_id)
+  if prop and prop.uom and tostring(prop.uom) ~= "" then return prop.uom end
   return nil
 end
 
@@ -506,7 +576,7 @@ local function send_command_and_refresh(driver, device, command, params)
   local command_params = {}
   for _, param in ipairs(params or {}) do command_params[#command_params + 1] = param end
   if command.eisy_uom_property then
-    local uom = cached_property_uom(eisy_device, address, command.eisy_uom_property)
+    local uom = cached_property_uom(controller, eisy_device, address, command.eisy_uom_property)
     if uom then command_params[#command_params + 1] = uom end
   end
   local _, err = client:command(address, command.eisy_command, command_params)
@@ -571,10 +641,6 @@ local function thermostat_fan_mode_code(mode)
   return nil
 end
 
-local function thermostat_temp_param(value)
-  return device_state.thermostat_setpoint_to_insteon(value)
-end
-
 local function thermostat_setpoint_arg(command)
   if command.args then
     return command.args.setpoint or command.args.temperature
@@ -604,28 +670,33 @@ local function set_thermostat_fan_mode(driver, device, command)
   send_command_and_refresh(driver, device, command, { code })
 end
 
-local function set_heating_setpoint(driver, device, command)
-  command.eisy_command = "CLISPH"
-  command.eisy_uom_property = "CLISPH"
+local function set_setpoint(driver, device, command, property_id, label)
+  command.eisy_command = property_id
+  command.eisy_uom_property = property_id
   local setpoint = thermostat_setpoint_arg(command)
-  local value = thermostat_temp_param(setpoint)
+  local setpoint_prop, status_prop
+  local controller = get_controller(driver, device)
+  if controller then
+    local address, eisy_device = command_address(controller, device, command.component)
+    if address then
+      setpoint_prop = cached_property(controller, eisy_device, address, property_id)
+      status_prop = cached_property(controller, eisy_device, address, isy_constants.PROP_STATUS)
+    end
+  end
+  local value = device_state.thermostat_setpoint_to_insteon(setpoint, setpoint_prop, status_prop)
   if not value then
-    log.warn("Invalid thermostat heating setpoint: " .. tostring(setpoint))
+    log.warn("Invalid thermostat " .. label .. " setpoint: " .. tostring(setpoint))
     return
   end
   send_command_and_refresh(driver, device, command, { value })
 end
 
+local function set_heating_setpoint(driver, device, command)
+  set_setpoint(driver, device, command, "CLISPH", "heating")
+end
+
 local function set_cooling_setpoint(driver, device, command)
-  command.eisy_command = "CLISPC"
-  command.eisy_uom_property = "CLISPC"
-  local setpoint = thermostat_setpoint_arg(command)
-  local value = thermostat_temp_param(setpoint)
-  if not value then
-    log.warn("Invalid thermostat cooling setpoint: " .. tostring(setpoint))
-    return
-  end
-  send_command_and_refresh(driver, device, command, { value })
+  set_setpoint(driver, device, command, "CLISPC", "cooling")
 end
 
 local function refresh_handler(driver, device)

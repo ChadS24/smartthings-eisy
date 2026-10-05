@@ -62,11 +62,19 @@ local function parse_properties(block)
   return isy_properties.parse_properties(block)
 end
 
+local function nested_tag_text(xml, outer, inner)
+  local block = tostring(xml or ""):match("<" .. outer .. "[^>]*>(.-)</" .. outer .. ">")
+  return block and tag_text(block, inner) or nil
+end
+
+-- /rest/config carries the controller identity in <root><id>/<name> and the
+-- model in <product><desc>, matching PyISY's Configuration parsing.
 function client.parse_config(xml)
+  xml = tostring(xml or "")
   return {
-    uuid = tag_text(xml, "uuid"),
-    model = tag_text(xml, "model"),
-    name = tag_text(xml, "name")
+    uuid = nested_tag_text(xml, "root", "id") or tag_text(xml, "uuid"),
+    model = nested_tag_text(xml, "product", "desc") or tag_text(xml, "model"),
+    name = nested_tag_text(xml, "root", "name") or tag_text(xml, "name")
   }
 end
 
