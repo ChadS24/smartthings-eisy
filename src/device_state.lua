@@ -4,6 +4,21 @@ local isy_constants = require "isy_constants"
 local state = {}
 local keypad_button_status = capabilities["oftentrust07380.keypadbuttonstatus"]
 
+-- Insteon button commands, as SmartThings button values. On and off are up and
+-- down so automations can tell them apart; a hold is a fade (BMAN on older
+-- firmware, which does not say which way).
+local BUTTON_VALUES = {
+  DON = "up",
+  DOF = "down",
+  DFON = "up_2x",
+  DFOF = "down_2x",
+  FDUP = "up_hold",
+  FDDOWN = "down_hold",
+  BMAN = "held"
+}
+local SUPPORTED_BUTTON_VALUES = { "up", "down", "up_2x", "down_2x", "up_hold", "down_hold", "held" }
+local BUTTON_KINDS = { keypad = true, remote = true }
+
 local function component_ref(device, component_id)
   component_id = component_id or "main"
   local components = device.profile and device.profile.components
@@ -280,10 +295,21 @@ function state.emit_component(device, component, kind, properties, component_nam
     emit_event(device, component, capabilities.thermostatOperatingState.ID, capabilities.thermostatOperatingState.thermostatOperatingState(operating_state))
     local fan_mode = thermostat_fan_mode(properties and properties.CLIFS)
     if fan_mode then emit_event(device, component, capabilities.thermostatFanMode.ID, capabilities.thermostatFanMode.thermostatFanMode(fan_mode)) end
+    local humidity = optional_number(properties and properties.CLIHUM)
+    if humidity then
+      humidity = math.max(0, math.min(100, math.floor(humidity + 0.5)))
+      emit_event(device, component, capabilities.relativeHumidityMeasurement.ID, capabilities.relativeHumidityMeasurement.humidity(humidity))
+    end
   elseif kind == "fan" then
     emit_event(device, component, capabilities.switch.ID, switch_event(value))
     emit_event(device, component, capabilities.fanSpeed.ID, capabilities.fanSpeed.fanSpeed(fan_speed_from_property(st)))
   elseif kind == "dimmer" then
+    emit_event(device, component, capabilities.switch.ID, switch_event(value))
+    emit_event(device, component, capabilities.switchLevel.ID, capabilities.switchLevel.level(percent_from_property(st)))
+  elseif kind == "remote" then
+    -- Remotes have no status, only button presses.
+    return
+  elseif kind == "keypad" and component == "main" then
     emit_event(device, component, capabilities.switch.ID, switch_event(value))
     emit_event(device, component, capabilities.switchLevel.ID, capabilities.switchLevel.level(percent_from_property(st)))
   elseif kind == "keypad" and component ~= "main" then
@@ -343,8 +369,33 @@ function state.leak_properties(dry_properties, leak_state)
   return properties
 end
 
+--- The SmartThings button value for an Insteon command, or nil if it is not a press.
+function state.button_value(control)
+  return BUTTON_VALUES[control]
+end
+
+--- Emit a button press on a keypad or remote component.
+function state.emit_button(device, component, control)
+  if not device then return false end
+  local value = BUTTON_VALUES[control]
+  local attribute = value and capabilities.button.button[value]
+  if not attribute then return false end
+  -- state_change so that pressing the same button twice fires twice.
+  emit_event(device, component or "main", capabilities.button.ID, attribute({ state_change = true }))
+  return true
+end
+
+local function emit_button_setup(device, eisy_device)
+  if not BUTTON_KINDS[eisy_device.kind] then return end
+  for component in pairs(eisy_device.components or {}) do
+    emit_event(device, component, capabilities.button.ID, capabilities.button.numberOfButtons({ value = 1 }, { visibility = { displayed = false } }))
+    emit_event(device, component, capabilities.button.ID, capabilities.button.supportedButtonValues(SUPPORTED_BUTTON_VALUES, { visibility = { displayed = false } }))
+  end
+end
+
 function state.emit_device(driver, device, eisy_device, statuses)
   if not eisy_device then return end
+  emit_button_setup(device, eisy_device)
   for component, address in pairs(eisy_device.components or {}) do
     local component_kind = eisy_device.kind
     if eisy_device.kind == "iolinc" and component == "sensor" then

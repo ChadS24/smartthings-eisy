@@ -120,6 +120,27 @@ package.preload["st.capabilities"] = function()
     ID = "thermostatCoolingSetpoint",
     coolingSetpoint = function(value) return event("thermostatCoolingSetpoint", "coolingSetpoint", value.value, value.unit) end
   }
+  local button_values = {
+    "pushed", "held", "double", "down", "down_2x", "down_hold", "up", "up_2x", "up_hold"
+  }
+  local button_attribute = {}
+  for _, value in ipairs(button_values) do
+    button_attribute[value] = function(opts)
+      local result = event("button", "button", value)
+      result.state_change = opts and opts.state_change
+      return result
+    end
+  end
+  capabilities.button = {
+    ID = "button",
+    button = button_attribute,
+    numberOfButtons = function(value) return event("button", "numberOfButtons", value.value) end,
+    supportedButtonValues = function(value) return event("button", "supportedButtonValues", value) end
+  }
+  capabilities.relativeHumidityMeasurement = {
+    ID = "relativeHumidityMeasurement",
+    humidity = function(value) return event("relativeHumidityMeasurement", "humidity", value) end
+  }
   capabilities["oftentrust07380.keypadbuttonstatus"] = {
     ID = "oftentrust07380.keypadbuttonstatus",
     buttonName = function(value) return event("oftentrust07380.keypadbuttonstatus", "buttonName", value) end,
@@ -183,6 +204,7 @@ end
 require "pyisy_alignment_spec"
 require "review_fixes_spec"
 require "scene_spec"
+require "buttons_health_spec"
 
 if failures > 0 then
   error(tostring(failures) .. " spec(s) failed")

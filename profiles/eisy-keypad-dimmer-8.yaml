@@ -1,15 +1,17 @@
-name: eisy-keypad-8
+name: eisy-keypad-dimmer-8
 components:
   - id: main
     capabilities:
       - id: switch
+        version: 1
+      - id: switchLevel
         version: 1
       - id: button
         version: 1
       - id: refresh
         version: 1
     categories:
-      - name: Switch
+      - name: Light
   - id: button2
     capabilities:
       - id: oftentrust07380.keypadbuttonstatus
