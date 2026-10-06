@@ -18,6 +18,9 @@ local ONLINE_FIELD = "eisy_online"
 -- How long the eISY must stay unreachable before devices are marked offline, so a
 -- WebSocket reconnect does not flap every device.
 local UNREACHABLE_GRACE_SECONDS = 60
+-- The REST check before marking devices offline must not hold the controller
+-- thread for long when the eISY is down.
+local PROBE_TIMEOUT_SECONDS = 5
 local HUMIDITY_THERMOSTAT_PROFILE = "eisy-thermostat-humidity"
 local scan_capability = capabilities["oftentrust07380.scanfordevices"]
 local handle_child_info_changed
@@ -564,6 +567,28 @@ set_reachable = function(driver, controller, reachable)
   elseif store.reachable ~= false and not controller:get_field("pending_unreachable") then
     controller:set_field("pending_unreachable", controller.thread:call_with_delay(UNREACHABLE_GRACE_SECONDS, function()
       controller:set_field("pending_unreachable", nil)
+      -- The WebSocket can be down while REST still works, for example while the
+      -- eISY has not yet released a previous subscription. Devices are only
+      -- offline when REST does not answer either.
+      local opts = controller_opts(controller)
+      local probe = EisyClient.new({
+        host = opts.host,
+        protocol = opts.protocol,
+        port = opts.port,
+        username = opts.username,
+        password = opts.password,
+        timeout = PROBE_TIMEOUT_SECONDS
+      })
+      local answered, probe_err = probe:probe()
+      if answered then
+        log.info("eISY WebSocket is down but REST answers; keeping devices online")
+        local status = store.websocket_status
+        if status ~= "connected" and status ~= "syncing" and status ~= "not_started" then
+          set_reachable(driver, controller, false)
+        end
+        return
+      end
+      log.warn("eISY did not answer: " .. tostring(probe_err))
       store.reachable = false
       log.warn("eISY unreachable for " .. tostring(UNREACHABLE_GRACE_SECONDS) .. "s; marking its devices offline")
       set_online(controller, false)

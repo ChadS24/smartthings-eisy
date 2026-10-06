@@ -203,9 +203,11 @@ describe("eISY device health", function()
   end)
 
   it("marks the controller and its devices offline only after the eISY stays unreachable", function()
-    local env = harness.load_driver(routes()).start()
+    local r = routes()
+    local env = harness.load_driver(r).start()
     local lamp = env.child(LAMP)
 
+    r["/rest/config"] = nil
     env.ws_status("disconnected")
     env.run_timers(1)
     assert_equal(last_health(env.controller), "online", "a short outage should not flap devices")
@@ -219,6 +221,28 @@ describe("eISY device health", function()
     assert_equal(last_health(lamp), "online")
   end)
 
+  it("keeps devices online while the WebSocket is down but REST still answers", function()
+    local env = harness.load_driver(routes()).start()
+    env.ws_status("disconnected")
+    env.run_timers(60)
+    assert_equal(last_health(env.controller), "online")
+    assert_equal(last_health(env.child(LAMP)), "online")
+    assert_equal(env.pending_timers(), 1, "expected the check to be re-armed while the WebSocket stays down")
+
+    env.routes["/rest/config"] = nil
+    env.run_timers(60)
+    assert_equal(last_health(env.controller), "offline")
+    assert_equal(last_health(env.child(LAMP)), "offline")
+  end)
+
+  it("does not re-arm the check once the WebSocket is back", function()
+    local env = harness.load_driver(routes()).start()
+    env.ws_status("disconnected")
+    env.ws_status("syncing")
+    env.run_timers(60)
+    assert_equal(env.pending_timers(), 0)
+  end)
+
   it("does not mark devices offline when the WebSocket reconnects within the grace period", function()
     local env = harness.load_driver(routes()).start()
     env.ws_status("lost_stream_connection")
@@ -230,8 +254,10 @@ describe("eISY device health", function()
   end)
 
   it("keeps a device with a communication error offline when the eISY comes back", function()
-    local env = harness.load_driver(routes()).start()
+    local r = routes()
+    local env = harness.load_driver(r).start()
     env.ws_message(harness.control_event("12 34 56 1", "ERR", 1))
+    r["/rest/config"] = nil
     env.ws_status("disconnected")
     env.run_timers(60)
     env.ws_status("connected")
@@ -256,6 +282,7 @@ describe("eISY device health", function()
     local r = routes()
     local env = harness.load_driver(r).start()
     r["/rest/nodes?members=false"] = nil
+    r["/rest/config"] = nil
     env.template.capability_handlers.refresh.refresh(env.driver, env.controller)
     assert_equal(last_health(env.child(LAMP)), "online", "existing devices keep working during the grace period")
     env.run_timers(60)
