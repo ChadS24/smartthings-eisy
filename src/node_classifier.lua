@@ -69,6 +69,8 @@ local STATELESS_NODE_DEFS = {
   remotelinc2_adv = true
 }
 
+local MAX_BUTTONS = 8
+
 local LEAK_SENSOR_TYPE = "16.8"
 local LEAK_DRY_GROUP = 1
 local LEAK_WET_GROUP = 2
@@ -254,6 +256,12 @@ local function is_contact_node(node)
       or def:match("window") ~= nil
 end
 
+-- Insteon category 0 is generalized controllers: mini remotes and RemoteLincs.
+-- They have no status, only the button presses they send.
+local function is_remote_node(node)
+  return node_def(node):match("^remotelinc") ~= nil or type_major(node) == "0"
+end
+
 local function is_switch_node(node)
   return SWITCH_NODE_DEFS[node_def(node)] == true
       or type_major(node) == "2"
@@ -346,6 +354,13 @@ local function is_fanlinc_group(group)
   return group_has(group, is_fan_node) and group_has(group, function(node)
     return node_def(node) == "dimmerlamponly" or node_def(node) == "dimmerlamponly_adv"
   end)
+end
+
+local function is_remote_group(group)
+  for _, node in ipairs(group) do
+    if not is_remote_node(node) then return false end
+  end
+  return #group > 0
 end
 
 local function is_keypad_group(group)
@@ -444,20 +459,41 @@ function classifier.classify_all(nodes, ignored_patterns)
           nodes = { node }
         }
       end
+    elseif is_remote_group(group) then
+      local components = {}
+      local count = 0
+      for index, node in ipairs(group) do
+        if index <= MAX_BUTTONS then
+          components[component_id(index)] = node.address
+          count = index
+        end
+      end
+      devices[#devices + 1] = {
+        key = key,
+        kind = "remote",
+        profile = "eisy-remote-" .. tostring(count),
+        label = group[1].name or key,
+        primary = group[1].address,
+        components = components,
+        nodes = group
+      }
     elseif is_keypad_group(group) then
       local components = {}
       local component_names = {}
       for index, node in ipairs(group) do
-        if index <= 8 then
+        if index <= MAX_BUTTONS then
           local id = component_id(index)
           components[id] = node.address
           component_names[id] = keypad_component_name(index, node)
         end
       end
+      -- The first node is the keypad's load, a dimmer on KeypadLinc dimmers.
+      local dimmable = is_dimmable_node(group[1])
       devices[#devices + 1] = {
         key = key,
         kind = "keypad",
-        profile = "eisy-keypad-8",
+        profile = dimmable and "eisy-keypad-dimmer-8" or "eisy-keypad-8",
+        dimmable = dimmable,
         label = group[1].name or key,
         primary = group[1].address,
         components = components,

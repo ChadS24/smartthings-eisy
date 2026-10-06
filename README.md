@@ -11,7 +11,8 @@ This package contains a local SmartThings Edge driver for Universal Devices eISY
 - Auto-creates supported Insteon child devices:
   - switches
   - dimmers
-  - keypads as multi-component devices
+  - keypads as multi-component devices, with a level control on KeypadLinc dimmers
+  - mini remotes and RemoteLincs as multi-button remotes
   - fan controllers
   - outlets
   - motion sensors
@@ -21,6 +22,9 @@ This package contains a local SmartThings Edge driver for Universal Devices eISY
 - Splits FanLinc modules into separate SmartThings devices for the light dimmer and fan motor.
 - Adds eISY scenes listed in the controller's `Scene IDs` setting as switches. A scene is on while any of its members is on, matching PyISY.
 - Keypad secondary buttons display their eISY names and current on/off status with a read-only custom status capability.
+- Keypad and remote buttons report presses for SmartThings routines (see Buttons below).
+- Reports thermostat humidity for thermostats that measure it.
+- Marks a device offline while the eISY reports an Insteon communication error for it, when its node is removed from the eISY (or its scene from `Scene IDs`), and marks the controller and all devices offline when the eISY has been unreachable for 60 seconds.
 - Sends local commands through `/rest/nodes/<node>/cmd/...`.
 - Uses a plain-HTTP `/rest/subscribe` WebSocket connection for live updates. Automatic polling fallback is disabled to protect v3 hubs with large Insteon installations.
 
@@ -49,6 +53,22 @@ Scenes are opt-in. To find a scene's ID, select the scene in the eISY Admin Cons
 - Turning the switch on or off sends `DON` / `DOF` to the scene, so members go to their scene on levels.
 - The switch is on while any member with a light level is on. Sensors and remotes that control the scene are ignored.
 - Removing an ID from the setting does not delete its SmartThings device; delete it in the SmartThings app.
+
+## Buttons
+
+Every keypad button and remote button has the standard SmartThings button capability, so routines can trigger on it. Insteon commands map to button values:
+
+| Press | Button value |
+| --- | --- |
+| On (`DON`) | `up` |
+| Off (`DOF`) | `down` |
+| Fast on, double-tap (`DFON`) | `up_2x` |
+| Fast off, double-tap (`DFOF`) | `down_2x` |
+| Hold to brighten (`FDUP`) | `up_hold` |
+| Hold to dim (`FDDOWN`) | `down_hold` |
+| Hold on older firmware (`BMAN`) | `held` |
+
+A toggle button alternates between `up` and `down`. The first button is the device's main component; the others are `button2` and up, in eISY button order.
 
 ## Notes
 
