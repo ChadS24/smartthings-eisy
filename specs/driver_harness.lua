@@ -22,7 +22,7 @@ local function load_profile(name)
     end
   end
   file:close()
-  return { components = components }
+  return { name = name, components = components }
 end
 harness.load_profile = load_profile
 
@@ -126,9 +126,12 @@ function harness.load_driver(routes, preferences)
       event.component = component.id
       self.events[#self.events + 1] = event
     end
+    -- As on a hub, a new profile takes effect later; see env.apply_profile_changes.
     function device:try_update_metadata(metadata)
       self.metadata = metadata
-      if metadata.profile then self.profile = load_profile(metadata.profile) end
+      if metadata.profile and (not self.profile or self.profile.name ~= metadata.profile) then
+        self.pending_profile = metadata.profile
+      end
     end
     function device:online() self.health[#self.health + 1] = "online" end
     function device:offline() self.health[#self.health + 1] = "offline" end
@@ -179,6 +182,20 @@ function harness.load_driver(routes, preferences)
       if candidate == device then table.remove(driver.devices, index) break end
     end
     driver.template.lifecycle_handlers.removed(driver, device)
+  end
+
+  -- Apply the profiles the driver asked for, then send each changed device the
+  -- infoChanged lifecycle event, as the hub does.
+  function env.apply_profile_changes()
+    for _, device in ipairs(driver.devices) do
+      if device.pending_profile then
+        local old_profile = device.profile
+        device.profile = load_profile(device.pending_profile)
+        device.pending_profile = nil
+        driver.template.lifecycle_handlers.infoChanged(driver, device, "infoChanged",
+          { old_st_store = { profile = old_profile, preferences = device.preferences or {} } })
+      end
+    end
   end
 
   -- Run the timers due within `seconds` (all of them when omitted).
