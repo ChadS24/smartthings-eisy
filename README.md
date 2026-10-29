@@ -42,6 +42,17 @@ smartthings capabilities:create -n oftentrust07380 -i capabilities/dusk-dawn.jso
 smartthings capabilities:presentation:create oftentrust07380.duskdawn --capability-version 1 -i capabilities/dusk-dawn-presentation.json
 ```
 
+SmartThings gives each new capability an English translation that reuses its internal name, and the app shows that translation as the card title, so a card reads `eisyConnectionStatus` instead of `Live updates`. To show readable titles and values, apply the English translations:
+
+```bash
+smartthings capabilities:translations:upsert oftentrust07380.eisyconnectionstatus --capability-version 1 -i capabilities/eisy-connection-status-translation-en.json
+smartthings capabilities:translations:upsert oftentrust07380.scanfordevices --capability-version 1 -i capabilities/scan-for-devices-translation-en.json
+smartthings capabilities:translations:upsert oftentrust07380.duskdawn --capability-version 1 -i capabilities/dusk-dawn-translation-en.json
+smartthings capabilities:translations:upsert oftentrust07380.keypadbuttonstatus --capability-version 1 -i capabilities/keypad-button-status-translation-en.json
+```
+
+Translations change only display text, so they take effect without a driver update; the app may need restarting to show them.
+
 ## Install And Test
 
 1. Enroll and install the driver at https://bestow-regional.api.smartthings.com/invite/d429GWDwQbjo

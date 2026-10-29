@@ -1,0 +1,17 @@
+{
+  "tag": "en",
+  "label": "Daylight",
+  "attributes": {
+    "duskDawn": {
+      "label": "Daylight",
+      "displayTemplate": "{{attribute}} of {{device.label}} is {{value}}",
+      "i18n": {
+        "value": {
+          "dusk": { "label": "Dark" },
+          "dawn": { "label": "Light" }
+        }
+      }
+    }
+  },
+  "commands": {}
+}

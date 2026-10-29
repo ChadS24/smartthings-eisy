@@ -1,0 +1,11 @@
+{
+  "tag": "en",
+  "label": "Scan for devices",
+  "attributes": {},
+  "commands": {
+    "scan": {
+      "label": "Scan for devices",
+      "arguments": {}
+    }
+  }
+}
