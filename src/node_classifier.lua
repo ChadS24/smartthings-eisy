@@ -3,14 +3,6 @@ local isy_constants = require "isy_constants"
 
 local INSTEON_SUBNODE_DIMMABLE = "1"
 local UOM_PERCENTAGE = "51"
--- Insteon device category 0: generalized controllers (mini remotes, RemoteLinc,
--- ControLinc). They control scenes but have no load to switch.
-local INSTEON_CATEGORY_CONTROLLER = "0"
-
-local CONTROLLER_ONLY_NODE_DEFS = {
-  remotelinc2 = true,
-  remotelinc2_adv = true
-}
 
 local THERMOSTAT_TYPES = {
   "4.8",
@@ -76,6 +68,8 @@ local STATELESS_NODE_DEFS = {
   remotelinc2 = true,
   remotelinc2_adv = true
 }
+
+local MAX_BUTTONS = 8
 
 local LEAK_SENSOR_TYPE = "16.8"
 local LEAK_DRY_GROUP = 1
@@ -262,6 +256,12 @@ local function is_contact_node(node)
       or def:match("window") ~= nil
 end
 
+-- Insteon category 0 is generalized controllers: mini remotes and RemoteLincs.
+-- They have no status, only the button presses they send.
+local function is_remote_node(node)
+  return node_def(node):match("^remotelinc") ~= nil or type_major(node) == "0"
+end
+
 local function is_switch_node(node)
   return SWITCH_NODE_DEFS[node_def(node)] == true
       or type_major(node) == "2"
@@ -297,15 +297,9 @@ local function group_key(node)
   return node.address
 end
 
--- Remotes have nothing to switch, so a switch device for one would do nothing.
-local function is_controller_only_node(node)
-  return type_major(node) == INSTEON_CATEGORY_CONTROLLER or CONTROLLER_ONLY_NODE_DEFS[node_def(node)] == true
-end
-
 local function should_include_node(node, patterns)
   local enabled = lower(node.enabled)
   if not is_native_insteon_node(node) or ignored(node, patterns) then return false end
-  if is_controller_only_node(node) then return false end
   if enabled ~= "false" then return true end
   return is_stateless_node(node) or is_motion_node(node) or is_contact_node(node) or is_water_node(node)
 end
@@ -379,6 +373,13 @@ local function is_fanlinc_group(group)
   return group_has(group, is_fan_node) and group_has(group, function(node)
     return node_def(node) == "dimmerlamponly" or node_def(node) == "dimmerlamponly_adv"
   end)
+end
+
+local function is_remote_group(group)
+  for _, node in ipairs(group) do
+    if not is_remote_node(node) then return false end
+  end
+  return #group > 0
 end
 
 local function is_keypad_group(group)
@@ -477,20 +478,41 @@ function classifier.classify_all(nodes, ignored_patterns)
           nodes = { node }
         }
       end
+    elseif is_remote_group(group) then
+      local components = {}
+      local count = 0
+      for index, node in ipairs(group) do
+        if index <= MAX_BUTTONS then
+          components[component_id(index)] = node.address
+          count = index
+        end
+      end
+      devices[#devices + 1] = {
+        key = key,
+        kind = "remote",
+        profile = "eisy-remote-" .. tostring(count),
+        label = group[1].name or key,
+        primary = group[1].address,
+        components = components,
+        nodes = group
+      }
     elseif is_keypad_group(group) then
       local components = {}
       local component_names = {}
       for index, node in ipairs(group) do
-        if index <= 8 then
+        if index <= MAX_BUTTONS then
           local id = component_id(index)
           components[id] = node.address
           component_names[id] = keypad_component_name(index, node)
         end
       end
+      -- The first node is the keypad's load, a dimmer on KeypadLinc dimmers.
+      local dimmable = is_dimmable_node(group[1])
       devices[#devices + 1] = {
         key = key,
         kind = "keypad",
-        profile = "eisy-keypad-8",
+        profile = dimmable and "eisy-keypad-dimmer-8" or "eisy-keypad-8",
+        dimmable = dimmable,
         label = group[1].name or key,
         primary = group[1].address,
         components = components,

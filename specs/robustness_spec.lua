@@ -94,7 +94,7 @@ describe("node-changed events", function()
   end)
 end)
 
-describe("multi-load and controller-only classification", function()
+describe("multi-load classification", function()
   local classifier = require "node_classifier"
 
   local function node(address, def, insteon_type, pnode, sgid)
@@ -131,15 +131,18 @@ describe("multi-load and controller-only classification", function()
     assert_equal(keys["BB BB BB 1"], "BB BB BB 1")
   end)
 
-  it("creates no device for remotes", function()
+  it("leaves remotes to their button devices", function()
     local devices = classifier.classify_all({
       node("CC CC CC 1", "RemoteLinc2", "0.16.65.0", "CC CC CC 1"),
       node("DD DD DD 1", "DimmerSwitchOnly", "0.18.65.0", "DD DD DD 1"),
       node("EE EE EE 1", "RelayLampSwitch", "2.57.65.0", "EE EE EE 1")
     })
 
-    assert_equal(#devices, 1)
-    assert_equal(devices[1].components.main, "EE EE EE 1")
+    local kinds = {}
+    for _, device in ipairs(devices) do kinds[device.components.main] = device.kind end
+    assert_equal(kinds["CC CC CC 1"], "remote")
+    assert_equal(kinds["DD DD DD 1"], "remote")
+    assert_equal(kinds["EE EE EE 1"], "switch")
   end)
 
   it("keeps PyISY's view that DimmerSwitchOnly does not count toward scene status", function()

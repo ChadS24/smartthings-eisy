@@ -4,6 +4,8 @@ components:
     capabilities:
       - id: switch
         version: 1
+      - id: button
+        version: 1
       - id: refresh
         version: 1
     categories:
@@ -12,11 +14,15 @@ components:
     capabilities:
       - id: oftentrust07380.keypadbuttonstatus
         version: 1
+      - id: button
+        version: 1
     categories:
       - name: Switch
   - id: button3
     capabilities:
       - id: oftentrust07380.keypadbuttonstatus
+        version: 1
+      - id: button
         version: 1
     categories:
       - name: Switch
@@ -24,11 +30,15 @@ components:
     capabilities:
       - id: oftentrust07380.keypadbuttonstatus
         version: 1
+      - id: button
+        version: 1
     categories:
       - name: Switch
   - id: button5
     capabilities:
       - id: oftentrust07380.keypadbuttonstatus
+        version: 1
+      - id: button
         version: 1
     categories:
       - name: Switch
@@ -36,17 +46,23 @@ components:
     capabilities:
       - id: oftentrust07380.keypadbuttonstatus
         version: 1
+      - id: button
+        version: 1
     categories:
       - name: Switch
   - id: button7
     capabilities:
       - id: oftentrust07380.keypadbuttonstatus
         version: 1
+      - id: button
+        version: 1
     categories:
       - name: Switch
   - id: button8
     capabilities:
       - id: oftentrust07380.keypadbuttonstatus
+        version: 1
+      - id: button
         version: 1
     categories:
       - name: Switch
