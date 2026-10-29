@@ -312,6 +312,13 @@ local function refresh_child(driver, controller, child)
   emit_child_state(driver, child, eisy_device, device_statuses(controller, eisy_device))
 end
 
+-- Emit a child's state from the statuses already cached, without asking the eISY.
+local function emit_cached_child_state(driver, controller, child)
+  local eisy_device = (controller:get_field("eisy_devices_by_key") or {})[device_child_key(child)]
+  if not eisy_device or not get_store(controller).scanned then return end
+  emit_child_state(driver, child, eisy_device, device_statuses(controller, eisy_device))
+end
+
 local function schedule_node_refresh(driver, controller, address, delay)
   if not address then return end
   local pending = controller:get_field("pending_node_refreshes") or {}
@@ -891,6 +898,11 @@ end
 
 local function info_changed_handler(driver, device, _, args)
   if device.device_network_id ~= CONTROLLER_DNI then
+    -- A scan that moves a child to a new profile emits its state before the hub
+    -- applies the profile, which drops the events for the new capabilities. The
+    -- hub then sends infoChanged, so emit the cached state again.
+    local controller = get_controller(driver, device)
+    if controller then emit_cached_child_state(driver, controller, device) end
     if handle_child_info_changed then handle_child_info_changed(driver, device, args) end
     return
   end

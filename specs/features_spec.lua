@@ -148,6 +148,19 @@ describe("motion sensor subnodes", function()
     assert_equal(last_value(motion, "oftentrust07380.duskdawn", "duskDawn"), "dawn")
   end)
 
+  it("show the subnodes' readings once an existing motion sensor gets its new profile", function()
+    local env = harness.load_driver(routes(MS1, [[<nodes><node id="AA 00 01 1">]] .. st(0) .. [[</node><node id="AA 00 01 2">]] .. st(255) .. [[</node></nodes>]]))
+    env.driver:try_create_device({ parent_assigned_child_key = key("AA 00 01 1"), label = "Motion", profile = "eisy-motion" })
+    env.start()
+    local motion = env.child(key("AA 00 01 1"))
+    assert_equal(last_value(motion, "oftentrust07380.duskdawn", "duskDawn"), nil, "the hub hasn't applied the new profile yet")
+
+    env.apply_profile_changes()
+    assert_equal(last_value(motion, "oftentrust07380.duskdawn", "duskDawn"), "dusk")
+    assert_equal(last_value(motion, "batteryLevel", "battery"), "normal")
+    assert_equal(last_value(motion, "motionSensor", "motion"), "inactive")
+  end)
+
   it("give a Motion Sensor II tamper, temperature and light level", function()
     local MS2 = {
       node_xml("BB 00 01 1", "Motion II", "PIR2844", "16.22.0.0", "BB 00 01 1", st(0)),
