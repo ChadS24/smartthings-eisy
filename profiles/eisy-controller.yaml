@@ -10,6 +10,9 @@ components:
         version: 1
     categories:
       - name: Bridges
+metadata:
+  mnmn: SmartThingsCommunity
+  vid: 30dd255c-b454-3703-980d-fa5940285d37
 preferences:
   - name: eisyHost
     title: eISY host or IP

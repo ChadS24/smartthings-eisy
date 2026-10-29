@@ -53,6 +53,12 @@ smartthings capabilities:translations:upsert oftentrust07380.keypadbuttonstatus 
 
 Translations change only display text, so they take effect without a driver update; the app may need restarting to show them.
 
+The controller uses its own layout, `presentations/eisy-controller-device-config.json`, which shows the connection status once, as the controller's status, instead of a second time as a separate card. `profiles/eisy-controller.yaml` refers to it by its `vid`. After changing the layout, create it again and put the `vid` it returns in the profile:
+
+```bash
+smartthings presentation:device-config:create -i presentations/eisy-controller-device-config.json
+```
+
 ## Install And Test
 
 1. Enroll and install the driver at https://bestow-regional.api.smartthings.com/invite/d429GWDwQbjo
