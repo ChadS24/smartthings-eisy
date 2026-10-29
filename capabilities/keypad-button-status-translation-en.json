@@ -1,0 +1,22 @@
+{
+  "tag": "en",
+  "label": "Button status",
+  "attributes": {
+    "buttonName": {
+      "label": "Button name",
+      "displayTemplate": "{{attribute}} of {{device.label}} is {{value}}",
+      "i18n": {}
+    },
+    "buttonStatus": {
+      "label": "Button status",
+      "displayTemplate": "{{attribute}} of {{device.label}} is {{value}}",
+      "i18n": {
+        "value": {
+          "on": { "label": "On" },
+          "off": { "label": "Off" }
+        }
+      }
+    }
+  },
+  "commands": {}
+}

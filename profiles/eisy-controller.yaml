@@ -4,10 +4,15 @@ components:
     capabilities:
       - id: oftentrust07380.scanfordevices
         version: 1
+      - id: oftentrust07380.eisyconnectionstatus
+        version: 1
       - id: refresh
         version: 1
     categories:
       - name: Bridges
+metadata:
+  mnmn: SmartThingsCommunity
+  vid: 30dd255c-b454-3703-980d-fa5940285d37
 preferences:
   - name: eisyHost
     title: eISY host or IP
@@ -62,7 +67,7 @@ preferences:
       default: ""
   - name: sceneIds
     title: Scene IDs
-    description: Comma-separated eISY scene IDs to add as switches, e.g. 12345, 23456. The ID is the scene's address in the eISY Admin Console.
+    description: Comma-separated eISY scene names or IDs to add as switches, e.g. Front Downlights, 23456. Scan for devices logs every scene's name and ID.
     required: false
     preferenceType: string
     definition:

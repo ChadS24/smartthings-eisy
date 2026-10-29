@@ -2,7 +2,29 @@ local capabilities = require "st.capabilities"
 local isy_constants = require "isy_constants"
 
 local state = {}
+
+-- The last non-zero fan speed (1-3) a fan reported, kept on its device.
+state.LAST_FAN_SPEED_FIELD = "last_fan_speed"
 local keypad_button_status = capabilities["oftentrust07380.keypadbuttonstatus"]
+
+-- Custom capabilities added later than the driver's first release are looked up
+-- defensively, so a hub that can't load one still runs everything else.
+local function optional_capability(id)
+  local ok, capability = pcall(function() return capabilities[id] end)
+  return ok and capability or nil
+end
+local connection_status = optional_capability("oftentrust07380.eisyconnectionstatus")
+local dusk_dawn = optional_capability("oftentrust07380.duskdawn")
+
+-- WebSocket subscription states, as the controller's connection status.
+local CONNECTION_STATUS_VALUES = {
+  connected = "connected",
+  syncing = "syncing",
+  reconnecting = "reconnecting",
+  disconnected = "disconnected",
+  lost_stream_connection = "disconnected",
+  not_configured = "notConfigured"
+}
 
 -- Insteon button commands, as SmartThings button values. On and off are up and
 -- down so automations can tell them apart; a hold is a fade (BMAN on older
@@ -141,6 +163,61 @@ function state.thermostat_unit(...)
   return "F"
 end
 
+local UOM_LUX = "36"
+
+-- Motion Sensor II temperature and light level, from the motion node's
+-- properties. Light level is reported only in lux, the unit SmartThings uses.
+local function emit_motion_measurements(device, component, properties)
+  local temperature_prop = properties and properties.CLITEMP
+  local temperature = temperature_prop and thermostat_temperature(temperature_prop)
+  if temperature then
+    emit_event(device, component, capabilities.temperatureMeasurement.ID, capabilities.temperatureMeasurement.temperature({
+      value = temperature, unit = temperature_unit_of(temperature_prop) or "F"
+    }))
+  end
+  local light_prop = properties and properties.LUMIN
+  local light = light_prop and tostring(light_prop.uom or "") == UOM_LUX and tonumber(light_prop.value)
+  if light then
+    emit_event(device, component, capabilities.illuminanceMeasurement.ID, capabilities.illuminanceMeasurement.illuminance({
+      value = light / (10 ^ precision_digits(light_prop)), unit = "lux"
+    }))
+  end
+end
+
+-- Whether a subnode is on, or nil while it has not reported.
+local function subnode_on(properties)
+  local value = properties and properties.ST and tonumber(properties.ST.value)
+  if value == nil then return nil end
+  return value > 0
+end
+
+-- A motion sensor's dusk/dawn, low-battery and tamper subnodes. These subnodes
+-- report nothing until first triggered, so, as Home Assistant does, low battery
+-- and tamper read as normal while the motion node itself has a known state.
+local function emit_motion_aux(device, aux, statuses, main_properties)
+  local main_known = subnode_on(main_properties) ~= nil
+  local dark = aux.dusk_dawn and subnode_on(statuses[aux.dusk_dawn])
+  if dark ~= nil and dusk_dawn then
+    emit_event(device, "main", dusk_dawn.ID, dusk_dawn.duskDawn(dark and "dusk" or "dawn"))
+  end
+  if aux.low_battery then
+    local low = subnode_on(statuses[aux.low_battery])
+    if low == nil and main_known then low = false end
+    if low ~= nil then
+      emit_event(device, "main", capabilities.batteryLevel.ID,
+        low and capabilities.batteryLevel.battery.warning() or capabilities.batteryLevel.battery.normal())
+    end
+  end
+  if aux.tamper then
+    local tampered = subnode_on(statuses[aux.tamper])
+    if tampered == nil and main_known then tampered = false end
+    if tampered ~= nil then
+      emit_event(device, "main", capabilities.tamperAlert.ID,
+        tampered and capabilities.tamperAlert.tamper.detected() or capabilities.tamperAlert.tamper.clear())
+    end
+  end
+end
+
 local function percent_from_property(prop)
   if not prop then return 0 end
   local formatted_percent = tostring(prop.formatted or ""):match("(%d+)%s*%%")
@@ -172,11 +249,13 @@ local function emit_optional_battery(device, component, properties)
   end
 end
 
+-- FanLinc speeds are sent as 64 (low), 191 (medium) and 255 (high); read a
+-- level back to the nearest of them.
 local function fan_speed_number(value)
   value = tonumber(value) or 0
   if value <= 0 then return 0 end
-  if value <= 85 then return 1 end
-  if value <= 170 then return 2 end
+  if value < 128 then return 1 end
+  if value < 223 then return 2 end
   return 3
 end
 
@@ -264,6 +343,7 @@ function state.emit_component(device, component, kind, properties, component_nam
   if kind == "motion" then
     emit_event(device, component, capabilities.motionSensor.ID, value > 0 and capabilities.motionSensor.motion.active() or capabilities.motionSensor.motion.inactive())
     emit_optional_battery(device, component, properties)
+    emit_motion_measurements(device, component, properties)
   elseif kind == "contact" then
     emit_event(device, component, capabilities.contactSensor.ID, value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
     emit_optional_battery(device, component, properties)
@@ -301,8 +381,13 @@ function state.emit_component(device, component, kind, properties, component_nam
       emit_event(device, component, capabilities.relativeHumidityMeasurement.ID, capabilities.relativeHumidityMeasurement.humidity(humidity))
     end
   elseif kind == "fan" then
+    local speed = fan_speed_from_property(st)
     emit_event(device, component, capabilities.switch.ID, switch_event(value))
-    emit_event(device, component, capabilities.fanSpeed.ID, capabilities.fanSpeed.fanSpeed(fan_speed_from_property(st)))
+    emit_event(device, component, capabilities.fanSpeed.ID, capabilities.fanSpeed.fanSpeed(speed))
+    -- Remembered so switching the fan on goes back to this speed.
+    if speed > 0 and device.set_field then
+      device:set_field(state.LAST_FAN_SPEED_FIELD, speed, { persist = true })
+    end
   elseif kind == "dimmer" then
     emit_event(device, component, capabilities.switch.ID, switch_event(value))
     emit_event(device, component, capabilities.switchLevel.ID, capabilities.switchLevel.level(percent_from_property(st)))
@@ -375,6 +460,14 @@ function state.button_value(control)
 end
 
 --- Emit a button press on a keypad or remote component.
+--- Show the WebSocket subscription's state on the controller.
+function state.emit_connection_status(device, status)
+  local value = CONNECTION_STATUS_VALUES[status]
+  if not device or not value or not connection_status then return false end
+  emit_event(device, "main", connection_status.ID, connection_status.connectionStatus(value))
+  return true
+end
+
 function state.emit_button(device, component, control)
   if not device then return false end
   local value = BUTTON_VALUES[control]
@@ -402,6 +495,9 @@ function state.emit_device(driver, device, eisy_device, statuses)
       component_kind = "iolinc_sensor"
     end
     state.emit_component(device, component, component_kind, statuses[address] or {}, eisy_device.component_names and eisy_device.component_names[component])
+  end
+  if eisy_device.aux then
+    emit_motion_aux(device, eisy_device.aux, statuses, statuses[eisy_device.primary])
   end
 end
 

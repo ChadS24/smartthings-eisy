@@ -102,7 +102,8 @@ describe("eISY remotes and keypads", function()
   it("gives a KeypadLinc dimmer a dimmable profile and a relay keypad the plain one", function()
     local profiles = {}
     for _, device in ipairs(classifier.classify_all(parse(nodes_xml()), "")) do profiles[device.key] = device.profile end
-    assert_equal(profiles["AA BB CC 1"], "eisy-keypad-dimmer-8")
+    -- Groups 1, 3 and 4 with no group 2 is a 6-button KeypadLinc.
+    assert_equal(profiles["AA BB CC 1"], "eisy-keypad-dimmer-6")
     assert_equal(profiles["11 22 33 1"], "eisy-keypad-8")
   end)
 

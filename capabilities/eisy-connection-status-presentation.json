@@ -1,0 +1,55 @@
+{
+  "dashboard": {
+    "states": [
+      {
+        "label": "{{connectionStatus.value}}",
+        "alternatives": [
+          { "key": "connected", "value": "Connected", "type": "active" },
+          { "key": "syncing", "value": "Syncing", "type": "active" },
+          { "key": "reconnecting", "value": "Reconnecting", "type": "inactive" },
+          { "key": "disconnected", "value": "Disconnected", "type": "inactive" },
+          { "key": "notConfigured", "value": "Not configured", "type": "inactive" }
+        ]
+      }
+    ],
+    "actions": [],
+    "basicPlus": []
+  },
+  "detailView": [
+    {
+      "label": "Live updates",
+      "displayType": "state",
+      "state": {
+        "label": "{{connectionStatus.value}}",
+        "alternatives": [
+          { "key": "connected", "value": "Connected", "type": "active" },
+          { "key": "syncing", "value": "Syncing", "type": "active" },
+          { "key": "reconnecting", "value": "Reconnecting", "type": "inactive" },
+          { "key": "disconnected", "value": "Disconnected", "type": "inactive" },
+          { "key": "notConfigured", "value": "Not configured", "type": "inactive" }
+        ]
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "eISY live updates",
+        "displayType": "list",
+        "list": {
+          "alternatives": [
+            { "key": "connected", "value": "Connected", "type": "active" },
+            { "key": "syncing", "value": "Syncing", "type": "active" },
+            { "key": "reconnecting", "value": "Reconnecting", "type": "inactive" },
+            { "key": "disconnected", "value": "Disconnected", "type": "inactive" },
+            { "key": "notConfigured", "value": "Not configured", "type": "inactive" }
+          ],
+          "value": "connectionStatus.value"
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "oftentrust07380.eisyconnectionstatus",
+  "version": 1
+}

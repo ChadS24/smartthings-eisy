@@ -1,0 +1,14 @@
+name: eisy-motion-insteon
+components:
+  - id: main
+    capabilities:
+      - id: motionSensor
+        version: 1
+      - id: oftentrust07380.duskdawn
+        version: 1
+      - id: batteryLevel
+        version: 1
+      - id: refresh
+        version: 1
+    categories:
+      - name: MotionSensor

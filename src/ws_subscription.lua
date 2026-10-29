@@ -90,6 +90,27 @@ local function read_frame(sock)
   return nil, payload_err
 end
 
+-- The eISY serves HTTPS with a self-signed certificate, so, as with the REST
+-- client (ssl.https's defaults), the certificate is not verified and old protocol
+-- versions are refused.
+local TLS_PARAMS = {
+  mode = "client",
+  protocol = "any",
+  verify = "none",
+  options = { "all", "no_sslv2", "no_sslv3", "no_tlsv1" }
+}
+
+local function start_tls(sock)
+  local ssl = cosock.ssl
+  if not (ssl and ssl.wrap) then return nil, "TLS is unavailable in this Edge runtime" end
+  local tls, err = ssl.wrap(sock, TLS_PARAMS)
+  if not tls then return nil, err end
+  tls:settimeout(10)
+  local ok, handshake_err = tls:dohandshake()
+  if not ok then return nil, handshake_err end
+  return tls
+end
+
 local function retry_delay(retries)
   local index = math.min((tonumber(retries) or 0) + 1, #WS_RETRY_BACKOFF)
   return WS_RETRY_BACKOFF[index]
@@ -119,11 +140,9 @@ local function safe_route_message(sock, frame, on_message)
 end
 
 function ws.start(driver, controller_device, opts, on_message)
-  if opts.protocol == "https" then
-    log.info("eISY WebSocket over TLS is not implemented; use HTTP for live WebSocket updates")
-    return nil
-  end
   if not opts.host or opts.host == "" then return nil end
+  local secure = opts.protocol == "https"
+  local port = tonumber(opts.port) or (secure and 443 or 80)
 
   local cancelled = false
   local connected = false
@@ -137,11 +156,19 @@ function ws.start(driver, controller_device, opts, on_message)
       local sock = cosock.socket.tcp()
       local connected_at
       sock:settimeout(10)
-      local ok, err = sock:connect(opts.host, tonumber(opts.port) or 80)
+      local ok, err = sock:connect(opts.host, port)
+      if ok and secure then
+        local tls, tls_err = start_tls(sock)
+        if tls then
+          sock = tls
+        else
+          ok, err = nil, "TLS handshake failed: " .. tostring(tls_err)
+        end
+      end
       if ok then
         local headers = {
           "GET /rest/subscribe HTTP/1.1",
-          "Host: " .. opts.host .. ":" .. tostring(opts.port or 80),
+          "Host: " .. opts.host .. ":" .. tostring(port),
           "Upgrade: websocket",
           "Connection: Upgrade",
           "Sec-WebSocket-Key: " .. random_key(),
@@ -218,7 +245,7 @@ function ws.start(driver, controller_device, opts, on_message)
           log.info(string.format(
             "eISY WebSocket subscription unavailable at %s:%s; retrying without polling fallback: %s",
             tostring(opts.host),
-            tostring(opts.port or 80),
+            tostring(port),
             tostring(header_err or response)
           ))
         end
