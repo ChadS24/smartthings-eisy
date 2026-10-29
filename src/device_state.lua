@@ -218,6 +218,28 @@ local function emit_motion_aux(device, aux, statuses, main_properties)
   end
 end
 
+-- A Smoke Bridge's alarms and battery level, each from its own node. No status
+-- means no alarm since the eISY started. The All Clear node only resets the
+-- alarms, so it shows nothing itself.
+local function emit_smoke_bridge(device, smoke, statuses)
+  if smoke.smoke then
+    local detected = subnode_on(statuses[smoke.smoke])
+    emit_event(device, "main", capabilities.smokeDetector.ID, detected
+      and capabilities.smokeDetector.smoke.detected() or capabilities.smokeDetector.smoke.clear())
+  end
+  if smoke.co then
+    local co = subnode_on(statuses[smoke.co])
+    emit_event(device, "main", capabilities.carbonMonoxideDetector.ID, co
+      and capabilities.carbonMonoxideDetector.carbonMonoxide.detected()
+      or capabilities.carbonMonoxideDetector.carbonMonoxide.clear())
+  end
+  if smoke.low_battery then
+    local low = subnode_on(statuses[smoke.low_battery])
+    emit_event(device, "main", capabilities.batteryLevel.ID,
+      low and capabilities.batteryLevel.battery.warning() or capabilities.batteryLevel.battery.normal())
+  end
+end
+
 local function percent_from_property(prop)
   if not prop then return 0 end
   local formatted_percent = tostring(prop.formatted or ""):match("(%d+)%s*%%")
@@ -347,6 +369,9 @@ function state.emit_component(device, component, kind, properties, component_nam
   elseif kind == "contact" then
     emit_event(device, component, capabilities.contactSensor.ID, value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
     emit_optional_battery(device, component, properties)
+  elseif kind == "smoke" then
+    -- A Smoke Bridge combines several nodes; emit_device emits it as a whole.
+    return
   elseif kind == "water" then
     -- No ST means the state is unknown; keep the last reported state.
     if st then
@@ -454,6 +479,45 @@ function state.leak_properties(dry_properties, leak_state)
   return properties
 end
 
+--- Smoke and CO alarm states implied by a command event from a Smoke Bridge node.
+---
+--- The Smoke and CO nodes send DON when they detect, and DOF when they clear on
+--- firmware that sends it; the All Clear node sends DON when every alarm clears.
+---
+--- @param role string "smoke", "co", "clear" or "low_battery"
+--- @param control string the event's control, e.g. "DON"
+--- @return table|nil states keyed "smoke" and "co" ("detected" or "clear"), or nil
+function state.smoke_states_from_control(role, control)
+  if role == "smoke" or role == "co" then
+    if control == "DON" then return { [role] = "detected" } end
+    if control == "DOF" then return { [role] = "clear" } end
+  elseif role == "clear" and control == "DON" then
+    return { smoke = "clear", co = "clear" }
+  end
+  return nil
+end
+
+--- Smoke or CO alarm state implied by a status event from a Smoke Bridge node.
+---
+--- Only Off counts. On can be a stale status the eISY replays on reconnect, after
+--- an all clear that left the node On; a real alarm also sends DON.
+function state.smoke_state_from_status(role, prop)
+  if role ~= "smoke" and role ~= "co" then return nil end
+  local value = prop and tonumber(prop.value)
+  if value == 0 then return { [role] = "clear" } end
+  return nil
+end
+
+--- Properties for a Smoke Bridge's smoke or CO node, with ST replaced by the alarm
+--- state last implied by an event, when there is one.
+function state.alarm_properties(properties, alarm_state)
+  if alarm_state == nil then return properties end
+  local resolved = {}
+  for id, prop in pairs(properties or {}) do resolved[id] = prop end
+  resolved.ST = { id = "ST", value = alarm_state == "detected" and 1 or 0 }
+  return resolved
+end
+
 --- The SmartThings button value for an Insteon command, or nil if it is not a press.
 function state.button_value(control)
   return BUTTON_VALUES[control]
@@ -498,6 +562,9 @@ function state.emit_device(driver, device, eisy_device, statuses)
   end
   if eisy_device.aux then
     emit_motion_aux(device, eisy_device.aux, statuses, statuses[eisy_device.primary])
+  end
+  if eisy_device.smoke then
+    emit_smoke_bridge(device, eisy_device.smoke, statuses)
   end
 end
 
