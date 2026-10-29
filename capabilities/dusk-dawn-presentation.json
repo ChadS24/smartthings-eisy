@@ -1,0 +1,38 @@
+{
+  "dashboard": {
+    "states": [],
+    "actions": [],
+    "basicPlus": []
+  },
+  "detailView": [
+    {
+      "label": "Daylight",
+      "displayType": "state",
+      "state": {
+        "label": "{{duskDawn.value}}",
+        "alternatives": [
+          { "key": "dusk", "value": "Dark", "type": "inactive" },
+          { "key": "dawn", "value": "Light", "type": "active" }
+        ]
+      }
+    }
+  ],
+  "automation": {
+    "conditions": [
+      {
+        "label": "Daylight",
+        "displayType": "list",
+        "list": {
+          "alternatives": [
+            { "key": "dusk", "value": "Dark", "type": "inactive" },
+            { "key": "dawn", "value": "Light", "type": "active" }
+          ],
+          "value": "duskDawn.value"
+        }
+      }
+    ],
+    "actions": []
+  },
+  "id": "oftentrust07380.duskdawn",
+  "version": 1
+}

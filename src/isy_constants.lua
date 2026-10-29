@@ -19,6 +19,11 @@ constants.CONTROL_NODE_CHANGED = "_3"
 constants.CONTROL_SYSTEM_STATUS = "_5"
 constants.CONTROL_PROGRESS = "_7"
 
+-- Node-changed ("_3") actions reporting an Insteon communication error for a node,
+-- and its clearing.
+constants.NODE_CHANGED_COMM_ERROR = "NE"
+constants.NODE_CHANGED_COMM_ERROR_CLEARED = "CE"
+
 -- Node-changed ("_3") actions that change which devices or scenes exist, their
 -- names, or their grouping, and so need a rescan. Others, such as NE/CE (comm
 -- errors and their clearing) and WH/WD (device writes in progress), happen often

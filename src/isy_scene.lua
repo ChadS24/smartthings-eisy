@@ -41,6 +41,80 @@ function scene.parse_ids(value)
   return ids
 end
 
+--- Every scene in a /rest/nodes response, as { address, name }.
+function scene.parse_list(xml)
+  local scenes = {}
+  for block in tostring(xml or ""):gmatch("<group[^>]*>(.-)</group>") do
+    local address = tag_text(block, "address")
+    if address then
+      scenes[#scenes + 1] = { address = address, name = tag_text(block, "name") or address }
+    end
+  end
+  return scenes
+end
+
+--- Resolve sceneIds entries, each a scene's ID or its name (any case), to IDs.
+---
+--- @param entries table the entries from parse_ids
+--- @param available table the eISY's scenes, from parse_list
+--- @return table the scene IDs, in order, without duplicates
+--- @return table problems, each { entry, reason }, for entries that resolved to
+---   nothing ("unknown") or to several scenes ("ambiguous", with their ids)
+function scene.resolve(entries, available)
+  local by_address = {}
+  local by_name = {}
+  for _, candidate in ipairs(available or {}) do
+    by_address[candidate.address] = candidate
+    local name = (trim(candidate.name) or ""):lower()
+    by_name[name] = by_name[name] or {}
+    table.insert(by_name[name], candidate)
+  end
+
+  local ids = {}
+  local seen = {}
+  local problems = {}
+  local function add(id)
+    if not seen[id] then
+      seen[id] = true
+      ids[#ids + 1] = id
+    end
+  end
+  for _, entry in ipairs(entries or {}) do
+    local matches = by_name[entry:lower()]
+    if by_address[entry] then
+      add(entry)
+    elseif matches and #matches == 1 then
+      add(matches[1].address)
+    elseif matches then
+      local addresses = {}
+      for _, match in ipairs(matches) do addresses[#addresses + 1] = match.address end
+      problems[#problems + 1] = { entry = entry, reason = "ambiguous", ids = addresses }
+    elseif entry:match("^%d+$") then
+      -- A numeric ID the list doesn't show; the scene fetch decides.
+      add(entry)
+    else
+      problems[#problems + 1] = { entry = entry, reason = "unknown" }
+    end
+  end
+  return ids, problems
+end
+
+--- The eISY's scenes as "Name (ID)", sorted by name, for the log.
+function scene.describe(available)
+  local sorted = {}
+  for _, candidate in ipairs(available or {}) do sorted[#sorted + 1] = candidate end
+  table.sort(sorted, function(a, b)
+    local name_a, name_b = tostring(a.name):lower(), tostring(b.name):lower()
+    if name_a == name_b then return tostring(a.address) < tostring(b.address) end
+    return name_a < name_b
+  end)
+  local parts = {}
+  for _, candidate in ipairs(sorted) do
+    parts[#parts + 1] = tostring(candidate.name) .. " (" .. tostring(candidate.address) .. ")"
+  end
+  return table.concat(parts, ", ")
+end
+
 --- Parse a /rest/nodes/<id> response for a scene.
 ---
 --- @return table|nil { address, name, members = { { address, controller } } }

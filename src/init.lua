@@ -26,6 +26,10 @@ local UNREACHABLE_GRACE_SECONDS = 60
 -- thread for long when the eISY is down.
 local PROBE_TIMEOUT_SECONDS = 5
 local HUMIDITY_THERMOSTAT_PROFILE = "eisy-thermostat-humidity"
+-- Insteon sensors send a heartbeat about once a day. As in Home Assistant, a
+-- sensor without one for 25 hours is treated as offline.
+local HEARTBEAT_TIMEOUT_SECONDS = 25 * 3600
+local HEALTH_CHECK_SECONDS = 3600
 local scan_capability = capabilities["oftentrust07380.scanfordevices"]
 local handle_child_info_changed
 local scan_eisy
@@ -146,6 +150,8 @@ local function component_addresses(eisy_device, store)
   for _, address in pairs(eisy_device and eisy_device.components or {}) do add(address) end
   -- A leak sensor's Wet node is not a component but feeds its state.
   if eisy_device and eisy_device.leak then add(eisy_device.leak.wet) end
+  -- So do a motion sensor's dusk/dawn, low-battery and tamper subnodes.
+  for _, address in pairs(eisy_device and eisy_device.aux or {}) do add(address) end
   return addresses
 end
 
@@ -190,6 +196,13 @@ local function has_comm_error(store, eisy_device)
   return false
 end
 
+-- Whether a sensor with a heartbeat subnode has gone too long without one.
+local function heartbeat_overdue(store, eisy_device)
+  if not eisy_device.heartbeat then return false end
+  local last = (store.heartbeats or {})[eisy_device.key]
+  return last ~= nil and os.time() - last > HEARTBEAT_TIMEOUT_SECONDS
+end
+
 local function set_online(device, online)
   if device:get_field(ONLINE_FIELD) == online then return end
   device:set_field(ONLINE_FIELD, online)
@@ -197,12 +210,14 @@ local function set_online(device, online)
 end
 
 -- A child is online while the eISY is reachable, it still has a node (or a
--- configured scene) on the eISY, and the eISY reports no communication error.
+-- configured scene) on the eISY, the eISY reports no communication error, and a
+-- sensor with a heartbeat has sent one recently.
 local function update_child_health(controller, child, eisy_device)
   if not child then return end
   local store = get_store(controller)
   local exists = eisy_device ~= nil or not store.scanned
-  set_online(child, store.reachable ~= false and exists and not (eisy_device and has_comm_error(store, eisy_device)))
+  set_online(child, store.reachable ~= false and exists
+    and not (eisy_device and (has_comm_error(store, eisy_device) or heartbeat_overdue(store, eisy_device))))
 end
 
 local function update_all_health(driver, controller)
@@ -217,7 +232,8 @@ end
 local function emit_mapped_component(controller, child, mapped)
   if not child or not mapped or not mapped.device or not mapped.address then return end
   update_child_health(controller, child, mapped.device)
-  if mapped.device.leak then
+  -- Devices whose state combines several nodes re-emit as a whole.
+  if mapped.device.leak or mapped.device.aux then
     emit_child_state(nil, child, mapped.device, device_statuses(controller, mapped.device))
     return
   end
@@ -334,6 +350,17 @@ end
 
 local scan_and_retry
 
+-- Re-check device health every hour while some sensor has a heartbeat, so a
+-- missed heartbeat takes it offline even when nothing else happens.
+local function arm_health_check(driver, controller)
+  if controller:get_field("health_timer") then return end
+  controller:set_field("health_timer", controller.thread:call_with_delay(HEALTH_CHECK_SECONDS, function()
+    controller:set_field("health_timer", nil)
+    update_all_health(driver, controller)
+    arm_health_check(driver, controller)
+  end, "eisy health check"))
+end
+
 -- Schedule a scan. A scan already pending is kept, unless `replace` asks for this
 -- one's delay instead.
 local function schedule_scan(driver, controller, delay, replace)
@@ -360,6 +387,23 @@ local function apply_event_update(driver, controller, routed)
     return true
   end
 
+  -- A communication error for one node, or its clearing, takes the node's device
+  -- offline or back online, the same as the ERR property.
+  if routed.kind == "node_changed" and routed.address
+      and (routed.action == isy_constants.NODE_CHANGED_COMM_ERROR
+        or routed.action == isy_constants.NODE_CHANGED_COMM_ERROR_CLEARED) then
+    local node = store:get_node(routed.address)
+    if node then
+      local failed = routed.action == isy_constants.NODE_CHANGED_COMM_ERROR
+      node:update_property({ id = isy_constants.PROP_ERROR, value = failed and 1 or 0 })
+    end
+    local mapped = (controller:get_field("eisy_devices_by_address") or {})[routed.address]
+    if mapped then
+      update_child_health(controller, find_child_by_key(driver, mapped.child_key), mapped.device)
+    end
+    return true
+  end
+
   if routed.kind == "system_config" then
     return true
   end
@@ -383,6 +427,20 @@ local function apply_event_update(driver, controller, routed)
   local scenes_by_member = controller:get_field("eisy_scenes_by_member") or {}
   local scene_member = scenes_by_member[routed.address] ~= nil
   if not mapped and not scene_member then return true end
+
+  -- A heartbeat subnode only says the sensor is alive. It alternates on and off,
+  -- so either command counts. Its status does not: the eISY replays every node's
+  -- last status when the WebSocket reconnects, even for a sensor that has died.
+  if mapped and mapped.heartbeat then
+    local control = routed.kind == "control" and routed.property and routed.property.id
+    if control == "DON" or control == "DOF" then
+      local heartbeats = store.heartbeats or {}
+      store.heartbeats = heartbeats
+      heartbeats[mapped.device.key] = os.time()
+      update_child_health(controller, find_child_by_key(driver, mapped.child_key), mapped.device)
+    end
+    return true
+  end
 
   if routed.kind == "status" and routed.property then
     store:update_status(routed.address, { [routed.property.id] = routed.property })
@@ -460,7 +518,7 @@ scan_eisy = function(driver, controller, scan_opts)
     end
   end
 
-  local nodes, nodes_err = client:get_nodes()
+  local nodes, nodes_err, _, scene_list = client:get_nodes()
   if not nodes then
     log.warn("Unable to fetch eISY nodes: " .. tostring(nodes_err))
     set_reachable(driver, controller, false)
@@ -532,6 +590,15 @@ scan_eisy = function(driver, controller, scan_opts)
     for component, address in pairs(eisy_device.components or {}) do
       by_address[address] = { child_key = key, component = component, address = address, device = eisy_device }
     end
+    for role, address in pairs(eisy_device.aux or {}) do
+      by_address[address] = { child_key = key, component = "main", address = address, device = eisy_device, aux_role = role }
+    end
+    if eisy_device.heartbeat then
+      by_address[eisy_device.heartbeat] = { child_key = key, component = "main", address = eisy_device.heartbeat, device = eisy_device, heartbeat = true }
+      -- Count from now until the first heartbeat, so a restart isn't a missed one.
+      store.heartbeats = store.heartbeats or {}
+      store.heartbeats[eisy_device.key] = store.heartbeats[eisy_device.key] or os.time()
+    end
     local leak = eisy_device.leak
     if leak then
       by_address[leak.dry].leak_role = "dry"
@@ -547,7 +614,21 @@ scan_eisy = function(driver, controller, scan_opts)
   -- eISY could not return this time so its child keeps working.
   local scenes_by_member = {}
   local scenes_unreachable = false
-  for _, scene_id in ipairs(isy_scene.parse_ids(opts.scene_ids)) do
+  -- Scene IDs entries can be IDs or names. Log the eISY's scenes when an entry
+  -- matches none or several, and on an explicit Scan for devices.
+  local scene_ids, scene_problems = isy_scene.resolve(isy_scene.parse_ids(opts.scene_ids), scene_list)
+  for _, problem in ipairs(scene_problems) do
+    if problem.reason == "ambiguous" then
+      log.warn("Scene IDs entry \"" .. problem.entry .. "\" matches several eISY scenes; use one of their IDs: "
+        .. table.concat(problem.ids, ", "))
+    else
+      log.warn("Scene IDs entry \"" .. problem.entry .. "\" matches no eISY scene name or ID")
+    end
+  end
+  if #scene_problems > 0 or (scan_opts and scan_opts.restore_removed) then
+    log.info("eISY scenes: " .. isy_scene.describe(scene_list))
+  end
+  for _, scene_id in ipairs(scene_ids) do
     local eisy_device
     local parsed, scene_err, scene_failure = client:get_scene(scene_id)
     if scene_failure == EisyClient.UNREACHABLE then scenes_unreachable = true end
@@ -591,6 +672,12 @@ scan_eisy = function(driver, controller, scan_opts)
   set_reachable(driver, controller, true)
   -- Mark devices whose node is gone from the eISY offline, and refresh the rest.
   update_all_health(driver, controller)
+  for _, eisy_device in pairs(by_key) do
+    if eisy_device.heartbeat then
+      arm_health_check(driver, controller)
+      break
+    end
+  end
   -- Retry when statuses, or a scene's definition, could not be fetched.
   return statuses ~= nil and not scenes_unreachable
 end
@@ -658,6 +745,8 @@ end
 
 local function stop_controller_threads(controller)
   cancel_controller_timer(controller, controller:get_field("pending_scan"))
+  cancel_controller_timer(controller, controller:get_field("health_timer"))
+  controller:set_field("health_timer", nil)
   cancel_controller_timer(controller, controller:get_field("pending_unreachable"))
   controller:set_field("pending_unreachable", nil)
   for _, field in ipairs({ "pending_node_refreshes", "pending_scene_refreshes" }) do
@@ -680,7 +769,10 @@ local function start_controller_threads(driver, controller)
   scan_and_retry(driver, controller)
 
   local opts = controller_opts(controller)
-  if not opts.host or opts.host == "" then return end
+  if not opts.host or opts.host == "" then
+    device_state.emit_connection_status(controller, "not_configured")
+    return
+  end
 
   local rest_client = client_for(controller)
   local ws_handle
@@ -692,6 +784,7 @@ local function start_controller_threads(driver, controller)
     on_status = function(status)
       local store = get_store(controller)
       store.websocket_status = status
+      device_state.emit_connection_status(controller, status)
       if status == "syncing" or status == "connected" then
         set_reachable(driver, controller, true)
       elseif status == "lost_stream_connection" or status == "disconnected" then
@@ -892,7 +985,9 @@ local function switch_on(driver, device, command)
     _, eisy_device = command_address(controller, device, command.component)
   end
   if eisy_device and eisy_device.kind == "fan" then
-    send_command_and_refresh(driver, device, command, { device_state.fan_speed_to_insteon("high") })
+    -- Back to the speed the fan last ran at; high when it hasn't run yet.
+    local speed = device.get_field and device:get_field(device_state.LAST_FAN_SPEED_FIELD) or "high"
+    send_command_and_refresh(driver, device, command, { device_state.fan_speed_to_insteon(speed) })
   else
     send_command_and_refresh(driver, device, command, {})
   end

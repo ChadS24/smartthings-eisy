@@ -1,0 +1,24 @@
+{
+  "name": "duskDawn",
+  "attributes": {
+    "duskDawn": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "enum": [
+              "dusk",
+              "dawn"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "value"
+        ]
+      }
+    }
+  },
+  "commands": {}
+}

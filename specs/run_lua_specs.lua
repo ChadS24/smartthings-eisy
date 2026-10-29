@@ -141,6 +141,33 @@ package.preload["st.capabilities"] = function()
     ID = "relativeHumidityMeasurement",
     humidity = function(value) return event("relativeHumidityMeasurement", "humidity", value) end
   }
+  capabilities.batteryLevel = {
+    ID = "batteryLevel",
+    battery = {
+      normal = function() return event("batteryLevel", "battery", "normal") end,
+      warning = function() return event("batteryLevel", "battery", "warning") end,
+      critical = function() return event("batteryLevel", "battery", "critical") end
+    }
+  }
+  capabilities.tamperAlert = {
+    ID = "tamperAlert",
+    tamper = {
+      clear = function() return event("tamperAlert", "tamper", "clear") end,
+      detected = function() return event("tamperAlert", "tamper", "detected") end
+    }
+  }
+  capabilities.illuminanceMeasurement = {
+    ID = "illuminanceMeasurement",
+    illuminance = function(value) return event("illuminanceMeasurement", "illuminance", value.value, value.unit) end
+  }
+  capabilities["oftentrust07380.duskdawn"] = {
+    ID = "oftentrust07380.duskdawn",
+    duskDawn = function(value) return event("oftentrust07380.duskdawn", "duskDawn", value) end
+  }
+  capabilities["oftentrust07380.eisyconnectionstatus"] = {
+    ID = "oftentrust07380.eisyconnectionstatus",
+    connectionStatus = function(value) return event("oftentrust07380.eisyconnectionstatus", "connectionStatus", value) end
+  }
   capabilities["oftentrust07380.keypadbuttonstatus"] = {
     ID = "oftentrust07380.keypadbuttonstatus",
     buttonName = function(value) return event("oftentrust07380.keypadbuttonstatus", "buttonName", value) end,
@@ -207,6 +234,7 @@ require "scene_spec"
 require "buttons_health_spec"
 require "robustness_spec"
 require "controller_spec"
+require "features_spec"
 
 if failures > 0 then
   error(tostring(failures) .. " spec(s) failed")
