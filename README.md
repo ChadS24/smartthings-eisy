@@ -20,6 +20,7 @@ This package contains a local SmartThings Edge driver for Universal Devices eISY
   - IOLinc as a relay plus sensor multi-component device
 - Skips non-Insteon eISY nodes, including node-server, Matter, Z-Wave, and Zigbee nodes.
 - Splits FanLinc modules into separate SmartThings devices for the light dimmer and fan motor.
+- Gives each load of a multi-load module, such as a dual outlet, its own SmartThings device.
 - Adds eISY scenes listed in the controller's `Scene IDs` setting as switches. A scene is on while any of its members is on, matching PyISY.
 - Keypad secondary buttons display their eISY names and current on/off status with a read-only custom status capability.
 - Keypad and remote buttons report presses for SmartThings routines (see Buttons below).
@@ -45,6 +46,12 @@ This package contains a local SmartThings Edge driver for Universal Devices eISY
    - scene IDs (optional): a comma-separated list such as `12345, 23456`
 
 4. Tap `Scan for devices` on the controller, or refresh the controller. Supported Insteon nodes and the listed scenes should appear as child devices.
+
+## Keeping Devices In Sync
+
+- The driver rescans on its own when eISY reports devices or scenes added, removed, renamed, moved, or enabled/disabled.
+- If eISY can't be reached when the driver starts (for example after a power outage, when the hub boots first), the scan is retried with increasing delays, up to every 5 minutes, and again as soon as the live connection to eISY comes back.
+- A device you delete in the SmartThings app stays deleted: automatic rescans don't recreate it. Tapping `Scan for devices` restores every deleted device. To keep a device out for good, add it to `Ignored node patterns`.
 
 ## Scenes
 

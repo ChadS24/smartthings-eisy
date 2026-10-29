@@ -8,8 +8,16 @@ local isy_properties = require "isy_properties"
 local isy_scene = require "isy_scene"
 
 local client = {}
+
+--- Third return value of a failed request when the eISY could not be reached.
+client.UNREACHABLE = "unreachable"
 local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 local MAX_RETRIES = 5
+-- Network failures (timeouts, refused connections) are retried at most this many
+-- times. Each can take a full timeout, so retrying them as often as a busy eISY's
+-- 503s would block the calling thread for minutes when the eISY is unreachable.
+local MAX_UNREACHABLE_RETRIES = 1
+local DEFAULT_TIMEOUT = 15
 local RETRY_BACKOFF = { 0.01, 0.10, 0.25, 1, 2 }
 local EMPTY_XML_RESPONSE = '<?xml version="1.0" encoding="UTF-8"?>'
 local EVENT_STATUS_CONTROLS = {
@@ -256,7 +264,7 @@ function client.new(opts)
     port = port,
     protocol = protocol,
     base_url = base,
-    timeout = tonumber(opts.timeout) or 30,
+    timeout = tonumber(opts.timeout) or DEFAULT_TIMEOUT,
     auth = basic_auth(opts.username, opts.password)
   }, { __index = client })
 end
@@ -266,9 +274,16 @@ local function retry_delay(retries)
   return RETRY_BACKOFF[index]
 end
 
+--- GET a path from the eISY.
+---
+--- @return string|nil the response body
+--- @return string|nil an error message
+--- @return table|string|nil the response headers on success; client.UNREACHABLE
+---   on failure when the eISY could not be reached
 function client:request(path, opts)
   opts = opts or {}
   local retries = tonumber(opts.retries) or 0
+  local unreachable_retries = tonumber(opts.unreachable_retries) or 0
   if not self.host or self.host == "" then
     return nil, "eISY host is not configured"
   end
@@ -297,13 +312,14 @@ function client:request(path, opts)
   transport.TIMEOUT = previous_timeout
 
   local retryable = false
+  local unreachable = false
   local err
   if not ok then
     err = tostring(success)
-    retryable = true
+    unreachable = true
   elseif not success then
     err = tostring(code)
-    retryable = true
+    unreachable = true
   else
     code = tonumber(code) or 0
     if code == 401 then
@@ -329,25 +345,29 @@ function client:request(path, opts)
     end
   end
 
+  if unreachable then
+    retryable = unreachable_retries < MAX_UNREACHABLE_RETRIES
+  end
   if retryable and retries < MAX_RETRIES then
     cosock.socket.sleep(retry_delay(retries))
     local next_opts = {}
     for key, value in pairs(opts) do next_opts[key] = value end
     next_opts.retries = retries + 1
+    if unreachable then next_opts.unreachable_retries = unreachable_retries + 1 end
     return self:request(path, next_opts)
   end
-  return nil, err
+  return nil, err, unreachable and client.UNREACHABLE or nil
 end
 
 function client:get_nodes()
-  local body, err = self:request("/rest/nodes?members=false")
-  if not body then return nil, err end
+  local body, err, kind = self:request("/rest/nodes?members=false")
+  if not body then return nil, err, kind end
   return client.parse_nodes(body)
 end
 
 function client:get_scene(id)
-  local body, err = self:request("/rest/nodes/" .. client.encode_node_address(id) .. "?members=true")
-  if not body then return nil, err end
+  local body, err, kind = self:request("/rest/nodes/" .. client.encode_node_address(id) .. "?members=true")
+  if not body then return nil, err, kind end
   return isy_scene.parse(body, id)
 end
 
@@ -358,20 +378,20 @@ function client:probe()
 end
 
 function client:get_config()
-  local body, err = self:request("/rest/config")
-  if not body then return nil, err end
+  local body, err, kind = self:request("/rest/config")
+  if not body then return nil, err, kind end
   return client.parse_config(body)
 end
 
 function client:get_all_status()
-  local body, err = self:request("/rest/status")
-  if not body then return nil, err end
+  local body, err, kind = self:request("/rest/status")
+  if not body then return nil, err, kind end
   return client.parse_status(body)
 end
 
 function client:get_node_status(address)
-  local body, err = self:request("/rest/status/" .. client.encode_node_address(address))
-  if not body then return nil, err end
+  local body, err, kind = self:request("/rest/status/" .. client.encode_node_address(address))
+  if not body then return nil, err, kind end
   local parsed = client.parse_status(body)
   return parsed.main or parsed[address] or {}
 end

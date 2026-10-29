@@ -36,10 +36,13 @@ end
 
 function harness.load_driver(routes, preferences)
   local requests = {}
+  -- While true, every request fails as if the eISY could not be reached.
+  local eisy_down = false
   local fake_http = {
     request = function(req)
       local path = req.url:gsub("^https?://[^/]+", "")
       requests[#requests + 1] = path
+      if eisy_down then return nil, "timeout" end
       local body = routes[path]
       if type(body) == "function" then body = body() end
       if not body then return 1, 404, {}, "Not Found" end
@@ -113,8 +116,12 @@ function harness.load_driver(routes, preferences)
         end
       end
     }
+    device.persisted = {}
     function device:get_field(key) return self.fields[key] end
-    function device:set_field(key, value) self.fields[key] = value end
+    function device:set_field(key, value, opts)
+      self.fields[key] = value
+      self.persisted[key] = opts and opts.persist or nil
+    end
     function device:emit_component_event(component, event)
       event.component = component.id
       self.events[#self.events + 1] = event
@@ -153,8 +160,26 @@ function harness.load_driver(routes, preferences)
     template = driver.template,
     ws_message = function(xml) ws_callback(xml) end,
     ws_status = function(status) ws_status(status) end,
-    pending_timers = function() return #timers end
+    pending_timers = function() return #timers end,
+    set_eisy_down = function(down) eisy_down = down end
   }
+
+  -- The delays of the pending timers, sorted.
+  function env.timer_delays()
+    local delays = {}
+    for _, timer in ipairs(timers) do delays[#delays + 1] = timer.delay end
+    table.sort(delays)
+    return delays
+  end
+
+  -- Delete a child as the SmartThings app does: the hub drops the device, then the
+  -- driver gets the removed lifecycle event.
+  function env.remove(device)
+    for index, candidate in ipairs(driver.devices) do
+      if candidate == device then table.remove(driver.devices, index) break end
+    end
+    driver.template.lifecycle_handlers.removed(driver, device)
+  end
 
   -- Run the timers due within `seconds` (all of them when omitted).
   function env.run_timers(seconds)

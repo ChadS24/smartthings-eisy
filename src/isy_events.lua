@@ -73,7 +73,7 @@ function events.route(parsed)
       kind = "node_changed",
       address = event.address,
       action = event.action,
-      requires_scan = true,
+      requires_scan = constants.NODE_CHANGED_TOPOLOGY_ACTIONS[event.action] == true,
       raw = event.raw
     }
   end

@@ -106,7 +106,7 @@ describe("pyISY-style event routing", function()
     local routed = events.route_xml([[
       <Event seqnum="3">
         <control>_3</control>
-        <action>1</action>
+        <action>ND</action>
         <node>11 22 33 1</node>
       </Event>
     ]])

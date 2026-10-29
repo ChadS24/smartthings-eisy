@@ -14,6 +14,10 @@ local isy_scene = require "isy_scene"
 
 local CONTROLLER_DNI = "eisy-controller"
 local PERSISTED_UUID_FIELD = "eisy_controller_uuid"
+-- Keys of child devices the user deleted, so automatic scans don't recreate them.
+local REMOVED_KEYS_FIELD = "eisy_removed_child_keys"
+-- Seconds before retrying a failed scan, by consecutive failure.
+local SCAN_RETRY_DELAYS = { 15, 30, 60, 120, 300 }
 local ONLINE_FIELD = "eisy_online"
 -- How long the eISY must stay unreachable before devices are marked offline, so a
 -- WebSocket reconnect does not flap every device.
@@ -253,11 +257,12 @@ local function refresh_child(driver, controller, child)
   local client = client_for(controller)
   local store = get_store(controller)
   for _, address in ipairs(component_addresses(eisy_device, store)) do
-    local status, err = client:get_node_status(address)
+    local status, err, kind = client:get_node_status(address)
     if status then
       store:update_status(address, status)
     else
       log.warn("Unable to refresh eISY node " .. tostring(address) .. ": " .. tostring(err))
+      if kind == EisyClient.UNREACHABLE then break end
     end
   end
   update_child_health(controller, child, eisy_device)
@@ -305,11 +310,12 @@ local function schedule_scene_refresh(driver, controller, key, delay)
     if store.websocket_status ~= "connected" then
       local client = client_for(controller)
       for _, address in ipairs(component_addresses(eisy_device, store)) do
-        local status, err = client:get_node_status(address)
+        local status, err, kind = client:get_node_status(address)
         if status then
           store:update_status(address, status)
         else
           log.warn("Unable to refresh eISY scene member " .. tostring(address) .. ": " .. tostring(err))
+          if kind == EisyClient.UNREACHABLE then break end
         end
       end
     end
@@ -317,12 +323,28 @@ local function schedule_scene_refresh(driver, controller, key, delay)
   end, "eisy scene refresh")
 end
 
-local function schedule_scan(driver, controller, delay)
+local function cancel_controller_timer(controller, timer)
+  if not timer then return end
+  if controller.thread and controller.thread.cancel_timer then
+    controller.thread:cancel_timer(timer)
+  elseif timer.cancel then
+    timer:cancel()
+  end
+end
+
+local scan_and_retry
+
+-- Schedule a scan. A scan already pending is kept, unless `replace` asks for this
+-- one's delay instead.
+local function schedule_scan(driver, controller, delay, replace)
   local existing = controller:get_field("pending_scan")
-  if existing then return end
+  if existing then
+    if not replace then return end
+    cancel_controller_timer(controller, existing)
+  end
   controller:set_field("pending_scan", controller.thread:call_with_delay(delay or 2, function()
     controller:set_field("pending_scan", nil)
-    scan_eisy(driver, controller)
+    scan_and_retry(driver, controller)
   end, "eisy debounced scan"))
 end
 
@@ -397,16 +419,27 @@ local function apply_event_update(driver, controller, routed)
   return true
 end
 
-scan_eisy = function(driver, controller)
+--- Scan the eISY and create or update child devices.
+---
+--- @param scan_opts table|nil { restore_removed = true } also recreates children the
+---   user deleted
+--- @return boolean|nil true on success, false when the scan failed and should be
+---   retried, nil when no host is configured
+scan_eisy = function(driver, controller, scan_opts)
   local opts = controller_opts(controller)
   if not opts.host or opts.host == "" then
     log.info("eISY host is not configured yet")
-    return
+    return nil
   end
 
   local client = client_for(controller)
   local store = get_store(controller)
-  local config, config_err = client:get_config()
+  local config, config_err, config_failure = client:get_config()
+  if config_failure == EisyClient.UNREACHABLE then
+    log.warn("Unable to reach eISY at " .. tostring(opts.host) .. ": " .. tostring(config_err))
+    set_reachable(driver, controller, false)
+    return false
+  end
   store.uuid = nil
   if config then
     store.uuid = config.uuid
@@ -431,7 +464,7 @@ scan_eisy = function(driver, controller)
   if not nodes then
     log.warn("Unable to fetch eISY nodes: " .. tostring(nodes_err))
     set_reachable(driver, controller, false)
-    return
+    return false
   end
   store:replace_nodes(nodes)
   -- Statuses are applied after classification, which keeps using node data only,
@@ -439,8 +472,21 @@ scan_eisy = function(driver, controller)
   local statuses, status_err = client:get_all_status()
   local previous_by_key = controller:get_field("eisy_devices_by_key") or {}
 
+  local removed_keys = controller:get_field(REMOVED_KEYS_FIELD) or {}
+  if scan_opts and scan_opts.restore_removed and next(removed_keys) ~= nil then
+    log.info("Restoring eISY child devices deleted in SmartThings")
+    removed_keys = {}
+    controller:set_field(REMOVED_KEYS_FIELD, removed_keys, { persist = true })
+  end
+
   local function upsert_child(eisy_device, key)
     local child = find_child_by_key(driver, key)
+    -- Scenes follow the sceneIds setting; other devices the user deleted stay
+    -- deleted until Scan for devices restores them.
+    if not child and not eisy_device.scene and removed_keys[key] then
+      log.debug("Skipping eISY child device deleted in SmartThings: " .. tostring(eisy_device.label))
+      return
+    end
     if not child then
       log.info("Creating eISY child device " .. eisy_device.label .. " as " .. eisy_device.profile)
       driver:try_create_device({
@@ -500,9 +546,11 @@ scan_eisy = function(driver, controller)
   -- Scenes are opted into by id. Keep the last known definition of a scene the
   -- eISY could not return this time so its child keeps working.
   local scenes_by_member = {}
+  local scenes_unreachable = false
   for _, scene_id in ipairs(isy_scene.parse_ids(opts.scene_ids)) do
     local eisy_device
-    local parsed, scene_err = client:get_scene(scene_id)
+    local parsed, scene_err, scene_failure = client:get_scene(scene_id)
+    if scene_failure == EisyClient.UNREACHABLE then scenes_unreachable = true end
     if parsed then
       eisy_device = isy_scene.device(parsed)
     else
@@ -543,15 +591,26 @@ scan_eisy = function(driver, controller)
   set_reachable(driver, controller, true)
   -- Mark devices whose node is gone from the eISY offline, and refresh the rest.
   update_all_health(driver, controller)
+  -- Retry when statuses, or a scene's definition, could not be fetched.
+  return statuses ~= nil and not scenes_unreachable
 end
 
-local function cancel_controller_timer(controller, timer)
-  if not timer then return end
-  if controller.thread and controller.thread.cancel_timer then
-    controller.thread:cancel_timer(timer)
-  elseif timer.cancel then
-    timer:cancel()
+--- Run a scan; when it fails, schedule another with backoff. Without this, an
+--- eISY that is down when the driver starts would leave every device unmapped
+--- until someone rescans by hand.
+scan_and_retry = function(driver, controller, scan_opts)
+  local ok = scan_eisy(driver, controller, scan_opts)
+  if ok then
+    controller:set_field("scan_failures", 0)
+    controller:set_field("scan_succeeded", true)
+  elseif ok == false then
+    local failures = (controller:get_field("scan_failures") or 0) + 1
+    controller:set_field("scan_failures", failures)
+    local delay = SCAN_RETRY_DELAYS[math.min(failures, #SCAN_RETRY_DELAYS)]
+    log.warn(string.format("eISY scan failed; retrying in %d seconds", delay))
+    schedule_scan(driver, controller, delay)
   end
+  return ok
 end
 
 set_reachable = function(driver, controller, reachable)
@@ -616,7 +675,9 @@ end
 
 local function start_controller_threads(driver, controller)
   stop_controller_threads(controller)
-  scan_eisy(driver, controller)
+  controller:set_field("scan_failures", 0)
+  controller:set_field("scan_succeeded", false)
+  scan_and_retry(driver, controller)
 
   local opts = controller_opts(controller)
   if not opts.host or opts.host == "" then return end
@@ -635,6 +696,10 @@ local function start_controller_threads(driver, controller)
         set_reachable(driver, controller, true)
       elseif status == "lost_stream_connection" or status == "disconnected" then
         set_reachable(driver, controller, false)
+      end
+      -- The eISY is reachable again; don't wait out the scan retry backoff.
+      if status == "connected" and not controller:get_field("scan_succeeded") then
+        schedule_scan(driver, controller, 1, true)
       end
     end
   }, function(message)
@@ -675,9 +740,18 @@ local function init_handler(driver, device)
   end
 end
 
-local function removed_handler(_, device)
+local function removed_handler(driver, device)
   if device.device_network_id == CONTROLLER_DNI then
     stop_controller_threads(device)
+    return
+  end
+  -- Remember the deletion so automatic scans don't bring the device back.
+  local controller = get_controller(driver, device)
+  local key = device_child_key(device)
+  if controller and key then
+    local removed_keys = controller:get_field(REMOVED_KEYS_FIELD) or {}
+    removed_keys[key] = true
+    controller:set_field(REMOVED_KEYS_FIELD, removed_keys, { persist = true })
   end
 end
 
@@ -696,7 +770,7 @@ local function info_changed_handler(driver, device, _, args)
       or old.ignoredNodes ~= prefs.ignoredNodes then
     start_controller_threads(driver, device)
   elseif tostring(old.sceneIds or "") ~= tostring(prefs.sceneIds or "") then
-    scan_eisy(driver, device)
+    scan_and_retry(driver, device)
   end
 end
 
@@ -923,21 +997,17 @@ end
 
 local function refresh_handler(driver, device)
   if device.device_network_id == CONTROLLER_DNI then
-    scan_eisy(driver, device)
+    scan_and_retry(driver, device)
   else
     local controller = get_controller(driver, device)
     if controller then refresh_child(driver, controller, device) end
   end
 end
 
+-- The explicit Scan for devices button also restores children the user deleted.
 local function scan_button_handler(driver, device)
-  if device.device_network_id == CONTROLLER_DNI then
-    scan_eisy(driver, device)
-    return
-  end
-
   local controller = get_controller(driver, device)
-  if controller then scan_eisy(driver, controller) end
+  if controller then scan_and_retry(driver, controller, { restore_removed = true }) end
 end
 
 local eisy_driver = Driver("eisy-insteon", {
