@@ -3,6 +3,14 @@ local isy_constants = require "isy_constants"
 
 local INSTEON_SUBNODE_DIMMABLE = "1"
 local UOM_PERCENTAGE = "51"
+-- Insteon device category 0: generalized controllers (mini remotes, RemoteLinc,
+-- ControLinc). They control scenes but have no load to switch.
+local INSTEON_CATEGORY_CONTROLLER = "0"
+
+local CONTROLLER_ONLY_NODE_DEFS = {
+  remotelinc2 = true,
+  remotelinc2_adv = true
+}
 
 local THERMOSTAT_TYPES = {
   "4.8",
@@ -289,9 +297,15 @@ local function group_key(node)
   return node.address
 end
 
+-- Remotes have nothing to switch, so a switch device for one would do nothing.
+local function is_controller_only_node(node)
+  return type_major(node) == INSTEON_CATEGORY_CONTROLLER or CONTROLLER_ONLY_NODE_DEFS[node_def(node)] == true
+end
+
 local function should_include_node(node, patterns)
   local enabled = lower(node.enabled)
   if not is_native_insteon_node(node) or ignored(node, patterns) then return false end
+  if is_controller_only_node(node) then return false end
   if enabled ~= "false" then return true end
   return is_stateless_node(node) or is_motion_node(node) or is_contact_node(node) or is_water_node(node)
 end
@@ -325,6 +339,25 @@ local function leak_nodes(group)
     end
   end
   return dry, wet
+end
+
+-- A node that switches or dims its own load. Shade motors are left out: they are
+-- one device however many nodes they have.
+local function is_load_node(node)
+  if is_stateless_node(node) or is_water_node(node) or is_motion_node(node)
+      or is_contact_node(node) or is_thermostat_node(node) or is_fan_node(node)
+      or node_def(node):match("motor") then
+    return false
+  end
+  return is_switch_node(node) or is_dimmable_node(node)
+end
+
+local function load_nodes(group)
+  local loads = {}
+  for _, node in ipairs(group) do
+    if is_load_node(node) then loads[#loads + 1] = node end
+  end
+  return loads
 end
 
 local function group_has(group, predicate)
@@ -478,6 +511,27 @@ function classifier.classify_all(nodes, ignored_patterns)
         },
         nodes = group
       }
+    elseif #load_nodes(group) > 1 then
+      -- Several loads under one parent, such as a dual outlet: one device per load.
+      -- The group's key, which the single device used before, stays with the
+      -- parent node's load (else the first load); the others are keyed by address.
+      local loads = load_nodes(group)
+      local keyed = loads[1]
+      for _, node in ipairs(loads) do
+        if node.address == key then keyed = node end
+      end
+      for _, node in ipairs(loads) do
+        local kind, profile = classify_single(node)
+        devices[#devices + 1] = {
+          key = node == keyed and key or node.address,
+          kind = kind,
+          profile = profile,
+          label = node.name or node.address,
+          primary = node.address,
+          components = { main = node.address },
+          nodes = { node }
+        }
+      end
     else
       local kind, profile = classify_single(group[1])
       devices[#devices + 1] = {

@@ -12,10 +12,29 @@ constants.PROP_ERROR = "ERR"
 constants.PROP_BUSY = "BUSY"
 
 constants.CONTROL_HEARTBEAT = "_0"
+-- "_1" carries program and variable updates ("Trigger" events), which this
+-- driver does not use.
 constants.CONTROL_SYSTEM_CONFIG = "_1"
 constants.CONTROL_NODE_CHANGED = "_3"
 constants.CONTROL_SYSTEM_STATUS = "_5"
 constants.CONTROL_PROGRESS = "_7"
+
+-- Node-changed ("_3") actions that change which devices or scenes exist, their
+-- names, or their grouping, and so need a rescan. Others, such as NE/CE (comm
+-- errors and their clearing) and WH/WD (device writes in progress), happen often
+-- and change nothing a scan would pick up.
+constants.NODE_CHANGED_TOPOLOGY_ACTIONS = {
+  ND = true, -- node added
+  NR = true, -- node removed
+  NN = true, -- node renamed
+  EN = true, -- node enabled or disabled
+  PC = true, -- parent changed
+  MV = true, -- node moved into a scene
+  RG = true, -- node removed from a scene
+  GD = true, -- scene added
+  GR = true, -- scene removed
+  GN = true -- scene renamed
+}
 
 constants.EVENT_PROPS_IGNORED = {
   DON = true,
