@@ -1,0 +1,27 @@
+{
+  "name": "eisyConnectionStatus",
+  "attributes": {
+    "connectionStatus": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "enum": [
+              "connected",
+              "syncing",
+              "reconnecting",
+              "disconnected",
+              "notConfigured"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "value"
+        ]
+      }
+    }
+  },
+  "commands": {}
+}

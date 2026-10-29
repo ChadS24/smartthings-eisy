@@ -1,0 +1,22 @@
+name: eisy-motion-ii
+components:
+  - id: main
+    capabilities:
+      - id: motionSensor
+        version: 1
+      - id: temperatureMeasurement
+        version: 1
+      - id: illuminanceMeasurement
+        version: 1
+      - id: oftentrust07380.duskdawn
+        version: 1
+      - id: battery
+        version: 1
+      - id: batteryLevel
+        version: 1
+      - id: tamperAlert
+        version: 1
+      - id: refresh
+        version: 1
+    categories:
+      - name: MotionSensor

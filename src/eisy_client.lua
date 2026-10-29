@@ -359,10 +359,11 @@ function client:request(path, opts)
   return nil, err, unreachable and client.UNREACHABLE or nil
 end
 
+--- The eISY's nodes, and as a fourth value its scenes ({ address, name }).
 function client:get_nodes()
   local body, err, kind = self:request("/rest/nodes?members=false")
   if not body then return nil, err, kind end
-  return client.parse_nodes(body)
+  return client.parse_nodes(body), nil, nil, isy_scene.parse_list(body)
 end
 
 function client:get_scene(id)

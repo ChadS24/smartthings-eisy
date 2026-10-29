@@ -71,6 +71,17 @@ local STATELESS_NODE_DEFS = {
 
 local MAX_BUTTONS = 8
 
+-- Insteon sensor subnodes, as Home Assistant's ISY integration maps them. Motion
+-- Sensors I and II (types 16.1 and 16.22) report dusk/dawn on subnode 2, low
+-- battery on 3, and on the Motion Sensor II, tampering on A (or 10 on some
+-- firmware). Open/close and leak sensors send a heartbeat on subnode 4.
+local INSTEON_MOTION_TYPES = { ["16.1"] = true, ["16.22"] = true }
+local MOTION_SENSOR_II_TYPE = "16.22"
+local SUBNODE_DUSK_DAWN = 2
+local SUBNODE_LOW_BATTERY = 3
+local SUBNODE_HEARTBEAT = 4
+local SUBNODE_TAMPER = { [10] = true, [16] = true }
+
 local LEAK_SENSOR_TYPE = "16.8"
 local LEAK_DRY_GROUP = 1
 local LEAK_WET_GROUP = 2
@@ -81,6 +92,7 @@ local WATER_SENSOR_TYPES = {
 
 local MOTION_SENSOR_TYPES = {
   ["16.1"] = true,
+  ["16.22"] = true,
   ["16.3"] = true,
   ["16.10"] = true
 }
@@ -122,8 +134,11 @@ local function type_key(node)
   return major .. "." .. minor
 end
 
+-- The group (subnode) number at the end of an Insteon address. It is hex: Motion
+-- Sensor II tamper and motion-disabled nodes end in "A" and "D".
 local function address_group(address)
-  return tonumber(lower(address):match("%s+(%d+)$"))
+  local group = lower(address):match("%s+(%x+)$")
+  return group and tonumber(group, 16) or nil
 end
 
 local function is_primary_subnode(node)
@@ -170,7 +185,7 @@ local function ignored(node, patterns)
 end
 
 local function is_insteon_address(address)
-  local b1, b2, b3, group = lower(address):match("^(%x+)%s+(%x+)%s+(%x+)%s+(%d+)$")
+  local b1, b2, b3, group = lower(address):match("^(%x+)%s+(%x+)%s+(%x+)%s+(%x+)$")
   return b1 ~= nil and #b1 <= 2 and #b2 <= 2 and #b3 <= 2 and group ~= ""
 end
 
@@ -193,12 +208,20 @@ local function component_id(index)
   return "button" .. tostring(index)
 end
 
-local function keypad_letter(index)
-  return string.char(string.byte("A") + index - 1)
+-- A button's letter. On 8-button keypads groups 1-8 are buttons A-H. On 6-button
+-- keypads group 1 is the On/Off pair and groups 3-6 are buttons A-D.
+local function keypad_letter(index, node, six_button)
+  local group = address_group(node.address)
+  if not group then return string.char(string.byte("A") + index - 1) end
+  if six_button then group = group - 2 end
+  return string.char(string.byte("A") + group - 1)
 end
 
-local function keypad_component_name(index, node)
-  local letter = keypad_letter(index)
+local function keypad_component_name(index, node, six_button)
+  if six_button and address_group(node.address) == 1 then
+    return "On/Off - " .. tostring(node.name or node.address)
+  end
+  local letter = keypad_letter(index, node, six_button)
   local name = tostring(node.name or node.address)
   local existing_letter, rest = name:match("^%s*([A-Ha-h])%s*%-%s*(.+)$")
   if existing_letter and lower(existing_letter) == lower(letter) then
@@ -300,6 +323,8 @@ end
 local function should_include_node(node, patterns)
   local enabled = lower(node.enabled)
   if not is_native_insteon_node(node) or ignored(node, patterns) then return false end
+  -- Subnodes numbered with hex letters are only used here for sensors (category 16).
+  if lower(node.address):match("%s+%x*%a%x*$") and type_major(node) ~= "16" then return false end
   if enabled ~= "false" then return true end
   return is_stateless_node(node) or is_motion_node(node) or is_contact_node(node) or is_water_node(node)
 end
@@ -354,6 +379,33 @@ local function load_nodes(group)
   return loads
 end
 
+local function subnode(group, number)
+  for _, node in ipairs(group) do
+    if address_group(node.address) == number then return node.address end
+  end
+  return nil
+end
+
+-- A motion sensor's extra subnodes, by role, or nil when it has none.
+local function motion_aux(group)
+  if not INSTEON_MOTION_TYPES[type_key(group[1])] then return nil end
+  local aux = {
+    dusk_dawn = subnode(group, SUBNODE_DUSK_DAWN),
+    low_battery = subnode(group, SUBNODE_LOW_BATTERY)
+  }
+  for _, node in ipairs(group) do
+    if SUBNODE_TAMPER[address_group(node.address)] then aux.tamper = node.address end
+  end
+  if next(aux) == nil then return nil end
+  return aux
+end
+
+-- The heartbeat subnode of an Insteon open/close or leak sensor.
+local function heartbeat_node(group)
+  if type_major(group[1]) ~= "16" then return nil end
+  return subnode(group, SUBNODE_HEARTBEAT)
+end
+
 local function group_has(group, predicate)
   for _, node in ipairs(group) do
     if predicate(node) then return true end
@@ -380,6 +432,18 @@ local function is_remote_group(group)
     if not is_remote_node(node) then return false end
   end
   return #group > 0
+end
+
+-- 6-button KeypadLincs have no group 2: their buttons are groups 1 and 3-6.
+-- `all_nodes` is every node the eISY reports under the keypad, including ones
+-- ignored or disabled, so a hidden button B can't make an 8-button keypad look
+-- like a 6-button one.
+local function is_six_button_keypad(all_nodes)
+  for _, node in ipairs(all_nodes) do
+    local number = address_group(node.address)
+    if number == nil or number == 2 or number > 6 then return false end
+  end
+  return true
 end
 
 local function is_keypad_group(group)
@@ -422,8 +486,16 @@ function classifier.classify_all(nodes, ignored_patterns)
   local patterns = type(ignored_patterns) == "table" and ignored_patterns or split_patterns(ignored_patterns)
   local grouped = {}
   local ordered_keys = {}
+  -- Every native Insteon node by group key, before ignore patterns and disabled
+  -- nodes are filtered out.
+  local all_by_key = {}
 
   for _, node in ipairs(nodes or {}) do
+    if is_native_insteon_node(node) then
+      local all = all_by_key[group_key(node)] or {}
+      all[#all + 1] = node
+      all_by_key[group_key(node)] = all
+    end
     if should_include_node(node, patterns) then
       local key = group_key(node)
       if not grouped[key] then
@@ -462,6 +534,7 @@ function classifier.classify_all(nodes, ignored_patterns)
         primary = main.address,
         components = { main = main.address },
         leak = leak,
+        heartbeat = heartbeat_node(group),
         nodes = group
       }
     elseif is_fanlinc_group(group) then
@@ -497,21 +570,24 @@ function classifier.classify_all(nodes, ignored_patterns)
         nodes = group
       }
     elseif is_keypad_group(group) then
+      local six_button = is_six_button_keypad(all_by_key[key] or group)
+      local max_components = six_button and 5 or MAX_BUTTONS
       local components = {}
       local component_names = {}
       for index, node in ipairs(group) do
-        if index <= MAX_BUTTONS then
+        if index <= max_components then
           local id = component_id(index)
           components[id] = node.address
-          component_names[id] = keypad_component_name(index, node)
+          component_names[id] = keypad_component_name(index, node, six_button)
         end
       end
       -- The first node is the keypad's load, a dimmer on KeypadLinc dimmers.
       local dimmable = is_dimmable_node(group[1])
+      local buttons = six_button and "6" or "8"
       devices[#devices + 1] = {
         key = key,
         kind = "keypad",
-        profile = dimmable and "eisy-keypad-dimmer-8" or "eisy-keypad-8",
+        profile = (dimmable and "eisy-keypad-dimmer-" or "eisy-keypad-") .. buttons,
         dimmable = dimmable,
         label = group[1].name or key,
         primary = group[1].address,
@@ -556,13 +632,22 @@ function classifier.classify_all(nodes, ignored_patterns)
       end
     else
       local kind, profile = classify_single(group[1])
+      profile = profile_with_battery(profile, kind, group)
+      local aux = kind == "motion" and motion_aux(group) or nil
+      if kind == "motion" and type_key(group[1]) == MOTION_SENSOR_II_TYPE then
+        profile = "eisy-motion-ii"
+      elseif aux then
+        profile = "eisy-motion-insteon"
+      end
       devices[#devices + 1] = {
         key = key,
         kind = kind,
-        profile = profile_with_battery(profile, kind, group),
+        profile = profile,
         label = group[1].name or key,
         primary = group[1].address,
         components = { main = group[1].address },
+        aux = aux,
+        heartbeat = kind == "contact" and heartbeat_node(group) or nil,
         nodes = group
       }
     end
