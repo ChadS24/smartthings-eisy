@@ -23,6 +23,10 @@ constants.EVENT_PROPS_IGNORED = {
   DFON = true,
   DFOF = true,
   BMAN = true,
+  SMAN = true,
+  FDUP = true,
+  FDDOWN = true,
+  FDSTOP = true,
   BRT = true,
   DIM = true
 }

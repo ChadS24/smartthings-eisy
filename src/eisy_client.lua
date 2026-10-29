@@ -351,6 +351,12 @@ function client:get_scene(id)
   return isy_scene.parse(body, id)
 end
 
+-- One request with no retries, to check whether the eISY answers at all.
+function client:probe()
+  local body, err = self:request("/rest/config", { retries = MAX_RETRIES })
+  return body ~= nil, err
+end
+
 function client:get_config()
   local body, err = self:request("/rest/config")
   if not body then return nil, err end

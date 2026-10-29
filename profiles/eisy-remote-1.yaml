@@ -1,0 +1,9 @@
+name: eisy-remote-1
+components:
+  - id: main
+    label: Button 1
+    capabilities:
+      - id: button
+        version: 1
+    categories:
+      - name: RemoteController
