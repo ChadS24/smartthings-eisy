@@ -156,6 +156,20 @@ package.preload["st.capabilities"] = function()
       detected = function() return event("tamperAlert", "tamper", "detected") end
     }
   }
+  capabilities.smokeDetector = {
+    ID = "smokeDetector",
+    smoke = {
+      clear = function() return event("smokeDetector", "smoke", "clear") end,
+      detected = function() return event("smokeDetector", "smoke", "detected") end
+    }
+  }
+  capabilities.carbonMonoxideDetector = {
+    ID = "carbonMonoxideDetector",
+    carbonMonoxide = {
+      clear = function() return event("carbonMonoxideDetector", "carbonMonoxide", "clear") end,
+      detected = function() return event("carbonMonoxideDetector", "carbonMonoxide", "detected") end
+    }
+  }
   capabilities.illuminanceMeasurement = {
     ID = "illuminanceMeasurement",
     illuminance = function(value) return event("illuminanceMeasurement", "illuminance", value.value, value.unit) end
@@ -235,6 +249,7 @@ require "buttons_health_spec"
 require "robustness_spec"
 require "controller_spec"
 require "features_spec"
+require "smoke_spec"
 
 if failures > 0 then
   error(tostring(failures) .. " spec(s) failed")

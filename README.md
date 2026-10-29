@@ -17,6 +17,7 @@ This package contains a local SmartThings Edge driver for Universal Devices eISY
   - outlets
   - motion sensors, with dusk/dawn and low battery on Insteon Motion Sensors, plus tamper, temperature and light level on the Motion Sensor II
   - contact sensors
+  - Smoke Bridges as smoke and carbon monoxide detectors, with low battery
   - IOLinc as a relay plus sensor multi-component device
 - Skips non-Insteon eISY nodes, including node-server, Matter, Z-Wave, and Zigbee nodes.
 - Splits FanLinc modules into separate SmartThings devices for the light dimmer and fan motor.
@@ -116,6 +117,7 @@ Insteon sensors spread their readings over several nodes. The driver combines th
 
 - **Motion Sensor (2842) and Motion Sensor II (2844):** subnode 2 sets dusk/dawn (Dark/Light), and subnode 3 sets the battery level to warning when the battery is low. Until a subnode first reports, the battery level reads normal. On the Motion Sensor II, subnode A (or 10) reports tampering, and the motion node's temperature and light level are shown. Light level is shown only when the eISY reports it in lux.
 - **Open/close and leak sensors:** subnode 4 is a heartbeat the sensor sends about once a day. A sensor that sends none for 25 hours is marked offline, and comes back online with its next heartbeat.
+- **Smoke Bridge (2982-222):** subnode 1 (Smoke) and subnode 2 (CO) set the smoke and carbon monoxide alarms, subnode 5 (Clear) clears both, and subnode 6 (Low Bat) sets the battery level to warning. The Test, Unknown Message and Malfunction subnodes aren't shown. The eISY can leave Smoke or CO On after an alarm or test has ended; once the driver has seen an all clear, that stale On doesn't bring the alarm back, but before then the driver can't tell it from a real alarm. Querying the Smoke Bridge in the eISY Admin Console turns a stale On off.
 
 ## Notes
 

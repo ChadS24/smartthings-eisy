@@ -90,11 +90,16 @@ local WATER_SENSOR_TYPES = {
   [LEAK_SENSOR_TYPE] = true
 }
 
+-- The Insteon Smoke Bridge (2982-222) has a node per message group: smoke 1, CO 2,
+-- test 3, unknown message 4, all clear 5, low battery 6 and malfunction 7. Test,
+-- unknown message and malfunction aren't used. Its group 4 is not a heartbeat.
+local SMOKE_BRIDGE_TYPE = "16.10"
+local SMOKE_BRIDGE_ROLES = { [1] = "smoke", [2] = "co", [5] = "clear", [6] = "low_battery" }
+
 local MOTION_SENSOR_TYPES = {
   ["16.1"] = true,
   ["16.22"] = true,
-  ["16.3"] = true,
-  ["16.10"] = true
+  ["16.3"] = true
 }
 
 local CONTACT_SENSOR_TYPES = {
@@ -267,8 +272,12 @@ local function is_motion_node(node)
       or def:match("occupancy") ~= nil
 end
 
+local function is_smoke_node(node)
+  return type_key(node) == SMOKE_BRIDGE_TYPE
+end
+
 local function is_contact_node(node)
-  if is_water_node(node) or is_motion_node(node) then return false end
+  if is_water_node(node) or is_motion_node(node) or is_smoke_node(node) then return false end
   local def = node_def(node)
   return CONTACT_SENSOR_TYPES[type_key(node)] == true
       or (type_major(node) == "16" and is_stateless_node(node))
@@ -327,6 +336,7 @@ local function should_include_node(node, patterns)
   if lower(node.address):match("%s+%x*%a%x*$") and type_major(node) ~= "16" then return false end
   if enabled ~= "false" then return true end
   return is_stateless_node(node) or is_motion_node(node) or is_contact_node(node) or is_water_node(node)
+      or is_smoke_node(node)
 end
 
 local function node_order(node)
@@ -364,7 +374,7 @@ end
 -- one device however many nodes they have.
 local function is_load_node(node)
   if is_stateless_node(node) or is_water_node(node) or is_motion_node(node)
-      or is_contact_node(node) or is_thermostat_node(node) or is_fan_node(node)
+      or is_contact_node(node) or is_smoke_node(node) or is_thermostat_node(node) or is_fan_node(node)
       or node_def(node):match("motor") then
     return false
   end
@@ -398,6 +408,16 @@ local function motion_aux(group)
   end
   if next(aux) == nil then return nil end
   return aux
+end
+
+-- A Smoke Bridge's nodes by role, keyed "smoke", "co", "clear" and "low_battery".
+local function smoke_roles(group)
+  local roles = {}
+  for _, node in ipairs(group) do
+    local role = SMOKE_BRIDGE_ROLES[address_group(node.address)]
+    if role and not roles[role] then roles[role] = node.address end
+  end
+  return roles
 end
 
 -- The heartbeat subnode of an Insteon open/close or leak sensor.
@@ -479,7 +499,8 @@ end
 -- Sensors and stateless controllers (remotes, motion sensors) can be scene
 -- controllers but their status is not a light level.
 function classifier.has_scene_status(node)
-  return not (is_stateless_node(node) or is_water_node(node) or is_motion_node(node) or is_contact_node(node))
+  return not (is_stateless_node(node) or is_water_node(node) or is_motion_node(node) or is_contact_node(node)
+    or is_smoke_node(node))
 end
 
 function classifier.classify_all(nodes, ignored_patterns)
@@ -535,6 +556,19 @@ function classifier.classify_all(nodes, ignored_patterns)
         components = { main = main.address },
         leak = leak,
         heartbeat = heartbeat_node(group),
+        nodes = group
+      }
+    elseif group_has(group, is_smoke_node) then
+      local roles = smoke_roles(group)
+      local main = roles.smoke or group[1].address
+      devices[#devices + 1] = {
+        key = key,
+        kind = "smoke",
+        profile = "eisy-smoke",
+        label = group[1].name or key,
+        primary = main,
+        components = { main = main },
+        smoke = roles,
         nodes = group
       }
     elseif is_fanlinc_group(group) then

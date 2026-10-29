@@ -150,8 +150,10 @@ local function component_addresses(eisy_device, store)
   for _, address in pairs(eisy_device and eisy_device.components or {}) do add(address) end
   -- A leak sensor's Wet node is not a component but feeds its state.
   if eisy_device and eisy_device.leak then add(eisy_device.leak.wet) end
-  -- So do a motion sensor's dusk/dawn, low-battery and tamper subnodes.
+  -- So do a motion sensor's dusk/dawn, low-battery and tamper subnodes, and a
+  -- Smoke Bridge's CO, all-clear and low-battery nodes.
   for _, address in pairs(eisy_device and eisy_device.aux or {}) do add(address) end
+  for _, address in pairs(eisy_device and eisy_device.smoke or {}) do add(address) end
   return addresses
 end
 
@@ -164,9 +166,23 @@ local function leak_states(controller)
   return states
 end
 
+-- Smoke Bridge alarm states implied by events, by device key, then "smoke" or
+-- "co". Persisted, so a restart can't bring back an alarm that has cleared.
+local SMOKE_STATES_FIELD = "smoke_states"
+
+local function record_smoke_states(controller, device_key, update)
+  local states = controller:get_field(SMOKE_STATES_FIELD) or {}
+  local device_states = states[device_key] or {}
+  for role, alarm_state in pairs(update) do device_states[role] = alarm_state end
+  states[device_key] = device_states
+  controller:set_field(SMOKE_STATES_FIELD, states, { persist = true })
+end
+
 -- Statuses for every node of an eISY device, keyed by address. For a leak sensor
 -- the main (Dry) node's ST is replaced by the resolved leak state: the last state
 -- implied by a command event, else whatever the node statuses unambiguously imply.
+-- A Smoke Bridge's smoke and CO nodes read Off when the eISY says so, else the
+-- state the last event implied: an all clear can leave them On on the eISY.
 local function device_statuses(controller, eisy_device)
   local store = get_store(controller)
   if eisy_device and eisy_device.scene then
@@ -179,6 +195,17 @@ local function device_statuses(controller, eisy_device)
     local leak_state = leak_states(controller)[eisy_device.key]
         or device_state.leak_state_from_status(statuses[leak.dry], leak.wet and statuses[leak.wet])
     statuses[leak.dry] = device_state.leak_properties(statuses[leak.dry], leak_state)
+  end
+  local smoke = eisy_device and eisy_device.smoke
+  if smoke then
+    local recorded = (controller:get_field(SMOKE_STATES_FIELD) or {})[eisy_device.key] or {}
+    for _, role in ipairs({ "smoke", "co" }) do
+      local address = smoke[role]
+      local st = address and statuses[address] and statuses[address].ST
+      if address and not (st and tonumber(st.value) == 0) then
+        statuses[address] = device_state.alarm_properties(statuses[address], recorded[role])
+      end
+    end
   end
   return statuses
 end
@@ -233,7 +260,7 @@ local function emit_mapped_component(controller, child, mapped)
   if not child or not mapped or not mapped.device or not mapped.address then return end
   update_child_health(controller, child, mapped.device)
   -- Devices whose state combines several nodes re-emit as a whole.
-  if mapped.device.leak or mapped.device.aux then
+  if mapped.device.leak or mapped.device.aux or mapped.device.smoke then
     emit_child_state(nil, child, mapped.device, device_statuses(controller, mapped.device))
     return
   end
@@ -444,6 +471,9 @@ local function apply_event_update(driver, controller, routed)
 
   if routed.kind == "status" and routed.property then
     store:update_status(routed.address, { [routed.property.id] = routed.property })
+    local smoke_update = mapped and mapped.smoke_role and routed.property.id == "ST"
+        and device_state.smoke_state_from_status(mapped.smoke_role, routed.property)
+    if smoke_update then record_smoke_states(controller, mapped.device.key, smoke_update) end
     if mapped then emit_mapped_component(controller, find_child_by_key(driver, mapped.child_key), mapped) end
     if scene_member then emit_member_scenes(driver, controller, routed.address) end
     return true
@@ -456,6 +486,11 @@ local function apply_event_update(driver, controller, routed)
     local leak_state = mapped.leak_role and device_state.leak_state_from_control(mapped.leak_role, routed.property.id)
     if leak_state then
       leak_states(controller)[mapped.device.key] = leak_state
+      emit_mapped_component(controller, find_child_by_key(driver, mapped.child_key), mapped)
+    end
+    local smoke_update = mapped.smoke_role and device_state.smoke_states_from_control(mapped.smoke_role, routed.property.id)
+    if smoke_update then
+      record_smoke_states(controller, mapped.device.key, smoke_update)
       emit_mapped_component(controller, find_child_by_key(driver, mapped.child_key), mapped)
     end
     local kind = mapped.device.kind
@@ -598,6 +633,12 @@ scan_eisy = function(driver, controller, scan_opts)
       -- Count from now until the first heartbeat, so a restart isn't a missed one.
       store.heartbeats = store.heartbeats or {}
       store.heartbeats[eisy_device.key] = store.heartbeats[eisy_device.key] or os.time()
+    end
+    for role, address in pairs(eisy_device.smoke or {}) do
+      local mapped = by_address[address]
+          or { child_key = key, component = "main", address = address, device = eisy_device }
+      mapped.smoke_role = role
+      by_address[address] = mapped
     end
     local leak = eisy_device.leak
     if leak then
