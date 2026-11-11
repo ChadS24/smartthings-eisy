@@ -148,8 +148,10 @@ local function component_addresses(eisy_device, store)
     end
   end
   for _, address in pairs(eisy_device and eisy_device.components or {}) do add(address) end
-  -- A leak sensor's Wet node is not a component but feeds its state.
+  -- A leak sensor's Wet node is not a component but feeds its state, and so
+  -- does a two-group open/close sensor's Closed node.
   if eisy_device and eisy_device.leak then add(eisy_device.leak.wet) end
+  if eisy_device and eisy_device.opening then add(eisy_device.opening.closed) end
   -- So do a motion sensor's dusk/dawn, low-battery and tamper subnodes, and a
   -- Smoke Bridge's CO, all-clear and low-battery nodes.
   for _, address in pairs(eisy_device and eisy_device.aux or {}) do add(address) end
@@ -164,6 +166,18 @@ local function leak_states(controller)
     controller:set_field("leak_states", states)
   end
   return states
+end
+
+-- Open/close states implied by events, by device key. Persisted: in two-group
+-- mode the Opened node stays On after a close, so after a restart the statuses
+-- alone can't say the sensor is closed.
+local CONTACT_STATES_FIELD = "contact_states"
+
+local function record_contact_state(controller, device_key, contact_state)
+  local states = controller:get_field(CONTACT_STATES_FIELD) or {}
+  if states[device_key] == contact_state then return end
+  states[device_key] = contact_state
+  controller:set_field(CONTACT_STATES_FIELD, states, { persist = true })
 end
 
 -- Smoke Bridge alarm states implied by events, by device key, then "smoke" or
@@ -195,6 +209,12 @@ local function device_statuses(controller, eisy_device)
     local leak_state = leak_states(controller)[eisy_device.key]
         or device_state.leak_state_from_status(statuses[leak.dry], leak.wet and statuses[leak.wet])
     statuses[leak.dry] = device_state.leak_properties(statuses[leak.dry], leak_state)
+  end
+  local opening = eisy_device and eisy_device.opening
+  if opening then
+    local contact_state = (controller:get_field(CONTACT_STATES_FIELD) or {})[eisy_device.key]
+        or device_state.contact_state_from_status(statuses[opening.opened], statuses[opening.closed])
+    statuses[opening.opened] = device_state.contact_properties(statuses[opening.opened], contact_state)
   end
   local smoke = eisy_device and eisy_device.smoke
   if smoke then
@@ -260,7 +280,7 @@ local function emit_mapped_component(controller, child, mapped)
   if not child or not mapped or not mapped.device or not mapped.address then return end
   update_child_health(controller, child, mapped.device)
   -- Devices whose state combines several nodes re-emit as a whole.
-  if mapped.device.leak or mapped.device.aux or mapped.device.smoke then
+  if mapped.device.leak or mapped.device.opening or mapped.device.aux or mapped.device.smoke then
     emit_child_state(nil, child, mapped.device, device_statuses(controller, mapped.device))
     return
   end
@@ -495,6 +515,11 @@ local function apply_event_update(driver, controller, routed)
       leak_states(controller)[mapped.device.key] = leak_state
       emit_mapped_component(controller, find_child_by_key(driver, mapped.child_key), mapped)
     end
+    local contact_state = mapped.contact_role and device_state.contact_state_from_control(mapped.contact_role, routed.property.id)
+    if contact_state then
+      record_contact_state(controller, mapped.device.key, contact_state)
+      emit_mapped_component(controller, find_child_by_key(driver, mapped.child_key), mapped)
+    end
     local smoke_update = mapped.smoke_role and device_state.smoke_states_from_control(mapped.smoke_role, routed.property.id)
     if smoke_update then
       record_smoke_states(controller, mapped.device.key, smoke_update)
@@ -646,6 +671,11 @@ scan_eisy = function(driver, controller, scan_opts)
           or { child_key = key, component = "main", address = address, device = eisy_device }
       mapped.smoke_role = role
       by_address[address] = mapped
+    end
+    local opening = eisy_device.opening
+    if opening then
+      by_address[opening.opened].contact_role = "opened"
+      by_address[opening.closed] = { child_key = key, component = "main", address = opening.closed, device = eisy_device, contact_role = "closed" }
     end
     local leak = eisy_device.leak
     if leak then
