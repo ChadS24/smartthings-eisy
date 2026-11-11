@@ -367,7 +367,10 @@ function state.emit_component(device, component, kind, properties, component_nam
     emit_optional_battery(device, component, properties)
     emit_motion_measurements(device, component, properties)
   elseif kind == "contact" then
-    emit_event(device, component, capabilities.contactSensor.ID, value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
+    -- No ST means the state is unknown; keep the last reported state.
+    if st then
+      emit_event(device, component, capabilities.contactSensor.ID, value > 0 and capabilities.contactSensor.contact.open() or capabilities.contactSensor.contact.closed())
+    end
     emit_optional_battery(device, component, properties)
   elseif kind == "smoke" then
     -- A Smoke Bridge combines several nodes; emit_device emits it as a whole.
@@ -472,6 +475,52 @@ function state.leak_properties(dry_properties, leak_state)
   if leak_state == "wet" then
     properties.ST = { id = "ST", value = 1 }
   elseif leak_state == "dry" then
+    properties.ST = { id = "ST", value = 0 }
+  else
+    properties.ST = nil
+  end
+  return properties
+end
+
+--- Open/close state implied by a command event from an open/close sensor's node.
+---
+--- The Opened node sends DON when the sensor opens, and DOF when it closes in
+--- single-group mode; in two-group mode the Closed node sends DON when it closes.
+---
+--- @param role string "opened" or "closed"
+--- @param control string the event's control, e.g. "DON"
+--- @return string|nil "open", "closed", or nil when the event says nothing
+function state.contact_state_from_control(role, control)
+  if role == "opened" then
+    if control == "DON" then return "open" end
+    if control == "DOF" then return "closed" end
+  elseif role == "closed" then
+    if control == "DON" then return "closed" end
+  end
+  return nil
+end
+
+--- Open/close state implied by the Opened and Closed nodes' ST values.
+---
+--- Only usable before any command event has been seen: in two-group mode both
+--- nodes stay On after a close, so equal values are ambiguous and return nil.
+function state.contact_state_from_status(opened_properties, closed_properties)
+  local opened_value = opened_properties and opened_properties.ST and tonumber(opened_properties.ST.value)
+  if opened_value == nil then return nil end
+  local opened_on = opened_value > 0
+  local closed_value = closed_properties and closed_properties.ST and tonumber(closed_properties.ST.value)
+  if closed_value ~= nil and (closed_value > 0) == opened_on then return nil end
+  return opened_on and "open" or "closed"
+end
+
+--- Properties for an open/close sensor's main component, with ST replaced by the
+--- resolved state (removed when the state is unknown).
+function state.contact_properties(opened_properties, contact_state)
+  local properties = {}
+  for id, prop in pairs(opened_properties or {}) do properties[id] = prop end
+  if contact_state == "open" then
+    properties.ST = { id = "ST", value = 1 }
+  elseif contact_state == "closed" then
     properties.ST = { id = "ST", value = 0 }
   else
     properties.ST = nil

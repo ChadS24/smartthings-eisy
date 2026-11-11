@@ -250,6 +250,7 @@ require "robustness_spec"
 require "controller_spec"
 require "features_spec"
 require "smoke_spec"
+require "contact_spec"
 
 if failures > 0 then
   error(tostring(failures) .. " spec(s) failed")

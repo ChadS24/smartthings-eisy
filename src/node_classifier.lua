@@ -80,6 +80,9 @@ local MOTION_SENSOR_II_TYPE = "16.22"
 local SUBNODE_DUSK_DAWN = 2
 local SUBNODE_LOW_BATTERY = 3
 local SUBNODE_HEARTBEAT = 4
+-- An open/close sensor in "two groups" mode sends On to subnode 2 when it closes,
+-- and its main (Opened) node stays On. Home Assistant calls it the negative node.
+local SUBNODE_CLOSED = 2
 local SUBNODE_TAMPER = { [10] = true, [16] = true }
 
 local LEAK_SENSOR_TYPE = "16.8"
@@ -420,6 +423,15 @@ local function smoke_roles(group)
   return roles
 end
 
+-- An open/close sensor's Opened and Closed nodes, or nil when it has no Closed
+-- subnode (single-group mode, or a sensor that doesn't have one).
+local function opening_nodes(group)
+  if type_major(group[1]) ~= "16" or address_group(group[1].address) ~= 1 then return nil end
+  local closed = subnode(group, SUBNODE_CLOSED)
+  if not closed then return nil end
+  return { opened = group[1].address, closed = closed }
+end
+
 -- The heartbeat subnode of an Insteon open/close or leak sensor.
 local function heartbeat_node(group)
   if type_major(group[1]) ~= "16" then return nil end
@@ -682,6 +694,7 @@ function classifier.classify_all(nodes, ignored_patterns)
         components = { main = group[1].address },
         aux = aux,
         heartbeat = kind == "contact" and heartbeat_node(group) or nil,
+        opening = kind == "contact" and opening_nodes(group) or nil,
         nodes = group
       }
     end
